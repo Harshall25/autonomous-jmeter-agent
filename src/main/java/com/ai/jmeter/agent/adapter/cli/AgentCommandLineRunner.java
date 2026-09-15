@@ -28,6 +28,7 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
 
     private static final String MODE_ARGUMENT = "--mode=";
     private static final String SOURCE_ARGUMENT = "--source=";
+    private static final String WORKLOAD_ARGUMENT = "--workload=";
 
     private final SelfHealingOrchestrator orchestrator;
 
@@ -43,14 +44,24 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
         if (mode.isEmpty() || source.isEmpty()) {
             log.info("""
                     Autonomous JMeter Performance Testing Agent
-                      Usage: --mode=<API|SQL> --source=<path to .har or SQL log>
-                      API mode ingests an HTTP Archive capture and builds an HTTP sampler plan.
-                      SQL mode ingests a slow query log and builds a JDBC sampler plan.""");
+                      Usage: --mode=<MODE> --source=<path> [--workload=<access log>]
+
+                      API      ingests an HTTP Archive capture of real traffic.
+                      OPENAPI  ingests an OpenAPI / Swagger document (JSON or YAML).
+                      POSTMAN  ingests a Postman collection export.
+                      SQL      ingests a database slow query log and builds a JDBC plan.
+                      STREAMING ingests a broker topic manifest and builds a messaging plan.
+
+                      --workload is optional. Supply a production access log and the agent infers
+                      the concurrency, ramp-up and endpoint mix to reproduce; without it the plan
+                      runs as a single-user correctness pass.""");
             return;
         }
 
-        AgentRunOutcome outcome = orchestrator.run(
-                new AgentRunRequest(parseMode(mode.get()), Path.of(source.get())));
+        AgentRunOutcome outcome = orchestrator.run(new AgentRunRequest(
+                parseMode(mode.get()),
+                Path.of(source.get()),
+                argumentValue(args, WORKLOAD_ARGUMENT).map(Path::of).orElse(null)));
 
         log.info("""
                 Agentic run complete after {} attempt(s).
@@ -58,12 +69,16 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
                   Test data : {}
                   Samples   : {}, all passing
                   Variables : {}
+                  Redacted  : {}
+                  Cost      : {}
                   Rationale : {}""",
                 outcome.attempts(),
                 outcome.artifacts().jmxScript(),
                 outcome.artifacts().csvData(),
                 outcome.report().totalSamples(),
                 outcome.script().identifiedVariables(),
+                outcome.redaction().countsByCategory(),
+                outcome.cost().describe(),
                 outcome.script().executionRationale());
     }
 

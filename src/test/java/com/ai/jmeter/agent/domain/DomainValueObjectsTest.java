@@ -97,7 +97,7 @@ class DomainValueObjectsTest {
         @Test
         @DisplayName("holds the mode and source together")
         void holdsFields() {
-            AgentRunRequest request = new AgentRunRequest(ExecutionMode.API, Path.of("a.har"));
+            AgentRunRequest request = AgentRunRequest.of(ExecutionMode.API, Path.of("a.har"));
 
             assertThat(request.mode()).isEqualTo(ExecutionMode.API);
             assertThat(request.sourceFile()).isEqualTo(Path.of("a.har"));
@@ -108,7 +108,7 @@ class DomainValueObjectsTest {
         void rejectsNullMode() {
             Path source = Path.of("a.har");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AgentRunRequest(null, source))
+                    .isThrownBy(() -> new AgentRunRequest(null, source, null))
                     .withMessageContaining("mode");
         }
 
@@ -116,7 +116,7 @@ class DomainValueObjectsTest {
         @DisplayName("rejects a missing source file")
         void rejectsNullSource() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AgentRunRequest(ExecutionMode.SQL, null))
+                    .isThrownBy(() -> new AgentRunRequest(ExecutionMode.SQL, null, null))
                     .withMessageContaining("sourceFile");
         }
     }

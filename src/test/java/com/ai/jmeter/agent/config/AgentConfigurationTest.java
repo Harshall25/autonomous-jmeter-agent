@@ -48,6 +48,7 @@ class AgentConfigurationTest {
         return configuration.promptCatalog(
                 new ClassPathResource("prompts/api-jmeter-system.st"),
                 new ClassPathResource("prompts/sql-jmeter-system.st"),
+                new ClassPathResource("prompts/streaming-jmeter-system.st"),
                 new ClassPathResource("prompts/heal-script.st"),
                 new ClassPathResource("prompts/repair-plan.st"));
     }
@@ -144,6 +145,7 @@ class AgentConfigurationTest {
                 configuration.jmxDocumentPort(),
                 configuration.healMemoryPort(new ObjectMapper(), properties()),
                 configuration.costGovernorPort(properties()),
+                configuration.workloadProfilerPort(properties()),
                 properties());
 
         assertThat(orchestrator).isNotNull();

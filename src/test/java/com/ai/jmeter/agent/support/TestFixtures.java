@@ -57,6 +57,7 @@ public final class TestFixtures {
         return new PromptCatalog(
                 new ClassPathResource("prompts/api-jmeter-system.st"),
                 new ClassPathResource("prompts/sql-jmeter-system.st"),
+                new ClassPathResource("prompts/streaming-jmeter-system.st"),
                 new ClassPathResource("prompts/heal-script.st"),
                 new ClassPathResource("prompts/repair-plan.st"));
     }
@@ -68,6 +69,6 @@ public final class TestFixtures {
     public static AgentProperties properties(Path homePath, Path libPath) {
         return new AgentProperties(
                 homePath, 3, Path.of("workspace"), Duration.ofMinutes(10), libPath,
-                150, 2000, 200, 8000, 500, false, 3, 0L, Map.of());
+                150, 2000, 200, 8000, 500, false, 3, 50, 30, 0L, Map.of());
     }
 }

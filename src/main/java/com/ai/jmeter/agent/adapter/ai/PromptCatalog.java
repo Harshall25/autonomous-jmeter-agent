@@ -1,7 +1,9 @@
 package com.ai.jmeter.agent.adapter.ai;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.domain.ExecutionMode.PromptProfile;
 import com.ai.jmeter.agent.domain.memory.HealPrecedent;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -9,11 +11,16 @@ import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.core.io.Resource;
 
 /**
- * Loads and manages the agent's three instruction sets as Spring AI {@link PromptTemplate}s.
+ * Loads and manages the agent's instruction sets as Spring AI {@link PromptTemplate}s.
  *
  * <p>Keeping the prompts in {@code .st} resources rather than string constants means they can be
  * reviewed, diffed and tuned without recompiling — prompt text is behaviour in an agentic system,
  * and behaviour belongs under version control in its own right.
+ *
+ * <p>System prompts are keyed by {@link PromptProfile} rather than by mode, because several
+ * ingestion modes produce the same kind of plan: a HAR capture, an OpenAPI document and a Postman
+ * collection all end up as HTTP samplers, and duplicating that guidance three times would let the
+ * copies drift.
  */
 public final class PromptCatalog {
 
@@ -27,32 +34,33 @@ public final class PromptCatalog {
     private static final String REPAIR_INSTRUCTION =
             "Return the smallest set of structural edits that fixes this failure.";
 
-    private final PromptTemplate apiSystemPrompt;
-    private final PromptTemplate sqlSystemPrompt;
+    private final Map<PromptProfile, PromptTemplate> systemPrompts;
     private final PromptTemplate healPrompt;
     private final PromptTemplate repairPlanPrompt;
 
     public PromptCatalog(
-            Resource apiSystemPrompt,
-            Resource sqlSystemPrompt,
+            Resource httpSystemPrompt,
+            Resource jdbcSystemPrompt,
+            Resource streamingSystemPrompt,
             Resource healPrompt,
             Resource repairPlanPrompt) {
-        this.apiSystemPrompt = new PromptTemplate(apiSystemPrompt);
-        this.sqlSystemPrompt = new PromptTemplate(sqlSystemPrompt);
+        this.systemPrompts = new EnumMap<>(PromptProfile.class);
+        this.systemPrompts.put(PromptProfile.HTTP, new PromptTemplate(httpSystemPrompt));
+        this.systemPrompts.put(PromptProfile.JDBC, new PromptTemplate(jdbcSystemPrompt));
+        this.systemPrompts.put(PromptProfile.STREAMING, new PromptTemplate(streamingSystemPrompt));
         this.healPrompt = new PromptTemplate(healPrompt);
         this.repairPlanPrompt = new PromptTemplate(repairPlanPrompt);
     }
 
     /**
      * @param mode the ingestion mode being run
-     * @return the system instructions briefing the model for that mode
+     * @return the system instructions briefing the model for the kind of plan that mode produces
      */
     public String systemPromptFor(ExecutionMode mode) {
-        PromptTemplate template = mode == ExecutionMode.SQL ? sqlSystemPrompt : apiSystemPrompt;
         // Returned via getTemplate() rather than render(): these prompts contain literal
         // ${variable_name} JMeter syntax that the model must receive verbatim, and the
         // StringTemplate renderer would try to resolve the inner braces as placeholders.
-        return template.getTemplate();
+        return systemPrompts.get(mode.promptProfile()).getTemplate();
     }
 
     /**
@@ -104,7 +112,7 @@ public final class PromptCatalog {
                 .collect(Collectors.joining("\n\n"));
     }
 
-    /** @return the user turn accompanying {@link #repairSystemPrompt(String, String)}. */
+    /** @return the user turn accompanying the repair-proposal brief. */
     public String repairInstruction() {
         return REPAIR_INSTRUCTION;
     }

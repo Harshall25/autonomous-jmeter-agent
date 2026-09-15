@@ -77,6 +77,31 @@ class AgentCommandLineRunnerTest {
     }
 
     @Test
+    @DisplayName("passes telemetry through when a workload log is supplied")
+    void forwardsWorkloadArgument() {
+        stubSuccessfulRun();
+
+        runner().run("--mode=API", "--source=a.har", "--workload=/logs/access.log");
+
+        ArgumentCaptor<AgentRunRequest> request = ArgumentCaptor.forClass(AgentRunRequest.class);
+        verify(orchestrator).run(request.capture());
+        assertThat(request.getValue().telemetry())
+                .contains(Path.of("/logs/access.log"));
+    }
+
+    @Test
+    @DisplayName("runs without telemetry when no workload log is supplied")
+    void omitsWorkloadWhenAbsent() {
+        stubSuccessfulRun();
+
+        runner().run("--mode=API", "--source=a.har");
+
+        ArgumentCaptor<AgentRunRequest> request = ArgumentCaptor.forClass(AgentRunRequest.class);
+        verify(orchestrator).run(request.capture());
+        assertThat(request.getValue().telemetry()).isEmpty();
+    }
+
+    @Test
     @DisplayName("ignores arguments it does not recognize")
     void ignoresUnknownArguments() {
         stubSuccessfulRun();

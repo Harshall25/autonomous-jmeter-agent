@@ -13,6 +13,7 @@ import com.ai.jmeter.agent.adapter.ai.RepairPlanResponse;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
+import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
 import com.ai.jmeter.agent.domain.AgentRunOutcome;
 import com.ai.jmeter.agent.domain.AgentRunRequest;
 import com.ai.jmeter.agent.domain.ExecutionMode;
@@ -125,6 +126,7 @@ class SelfHealingLoopModelInteractionTest {
                 new DomJmxDocumentAdapter(),
                 memory,
                 new BudgetedCostGovernor(0),
+                new AccessLogWorkloadProfiler(30),
                 3,
                 false,
                 3);
@@ -135,7 +137,7 @@ class SelfHealingLoopModelInteractionTest {
     void promptsModelTwiceWhenHealingOnce() {
         when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, ExecutionReport.success(1, ""));
 
-        AgentRunOutcome outcome = orchestrator().run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+        AgentRunOutcome outcome = orchestrator().run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
 
         verify(chatClient, times(2)).prompt();
         assertThat(outcome.attempts()).isEqualTo(2);
@@ -146,7 +148,7 @@ class SelfHealingLoopModelInteractionTest {
     void promptsModelOnceWhenNoHealingNeeded() {
         when(executionEngine.execute(any())).thenReturn(ExecutionReport.success(1, ""));
 
-        orchestrator().run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+        orchestrator().run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
 
         verify(chatClient, times(1)).prompt();
     }
@@ -156,7 +158,7 @@ class SelfHealingLoopModelInteractionTest {
     void repairTurnEditsThePlan() {
         when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, ExecutionReport.success(1, ""));
 
-        AgentRunOutcome outcome = orchestrator().run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+        AgentRunOutcome outcome = orchestrator().run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
 
         assertThat(outcome.script().jmxXmlContent())
                 .as("the model's edit was applied to the existing tree")
@@ -173,7 +175,7 @@ class SelfHealingLoopModelInteractionTest {
     void repairTurnIsBriefedWithStructure() {
         when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, ExecutionReport.success(1, ""));
 
-        orchestrator().run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+        orchestrator().run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
 
         ArgumentCaptor<String> systemPrompts = ArgumentCaptor.forClass(String.class);
         verify(requestSpec, times(2)).system(systemPrompts.capture());
@@ -192,7 +194,7 @@ class SelfHealingLoopModelInteractionTest {
     void credentialsNeverReachTheModel() {
         when(executionEngine.execute(any())).thenReturn(ExecutionReport.success(1, ""));
 
-        orchestrator().run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+        orchestrator().run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
 
         ArgumentCaptor<String> userTurns = ArgumentCaptor.forClass(String.class);
         verify(requestSpec).user(userTurns.capture());

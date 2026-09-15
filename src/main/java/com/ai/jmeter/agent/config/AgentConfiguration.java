@@ -13,8 +13,12 @@ import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.memory.JsonlHealMemoryAdapter;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
+import com.ai.jmeter.agent.adapter.parser.OpenApiParserAdapter;
+import com.ai.jmeter.agent.adapter.parser.PostmanCollectionParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
+import com.ai.jmeter.agent.adapter.parser.StreamingManifestParserAdapter;
 import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
+import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.CostGovernorPort;
@@ -24,6 +28,7 @@ import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
+import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -55,9 +60,11 @@ public class AgentConfiguration {
     public PromptCatalog promptCatalog(
             @Value("classpath:/prompts/api-jmeter-system.st") Resource apiPrompt,
             @Value("classpath:/prompts/sql-jmeter-system.st") Resource sqlPrompt,
+            @Value("classpath:/prompts/streaming-jmeter-system.st") Resource streamingPrompt,
             @Value("classpath:/prompts/heal-script.st") Resource healPrompt,
             @Value("classpath:/prompts/repair-plan.st") Resource repairPrompt) {
-        return new PromptCatalog(apiPrompt, sqlPrompt, healPrompt, repairPrompt);
+        return new PromptCatalog(
+                apiPrompt, sqlPrompt, streamingPrompt, healPrompt, repairPrompt);
     }
 
     @Bean
@@ -94,6 +101,25 @@ public class AgentConfiguration {
     @Bean
     public TrafficParserPort sqlLogParserAdapter(AgentProperties properties) {
         return new SqlLogParserAdapter(properties.maxSqlQueries());
+    }
+
+    @Bean
+    public TrafficParserPort openApiParserAdapter(
+            ObjectMapper objectMapper, AgentProperties properties) {
+        return new OpenApiParserAdapter(objectMapper, properties.maxHarEntries());
+    }
+
+    @Bean
+    public TrafficParserPort postmanCollectionParserAdapter(
+            ObjectMapper objectMapper, AgentProperties properties) {
+        return new PostmanCollectionParserAdapter(
+                objectMapper, properties.maxHarEntries(), properties.maxHarBodyCharacters());
+    }
+
+    @Bean
+    public TrafficParserPort streamingManifestParserAdapter(
+            ObjectMapper objectMapper, AgentProperties properties) {
+        return new StreamingManifestParserAdapter(objectMapper, properties.maxTopics());
     }
 
     @Bean
@@ -140,6 +166,11 @@ public class AgentConfiguration {
     }
 
     @Bean
+    public WorkloadProfilerPort workloadProfilerPort(AgentProperties properties) {
+        return new AccessLogWorkloadProfiler(properties.workloadRampUpSeconds());
+    }
+
+    @Bean
     public SensitiveDataRedactorPort sensitiveDataRedactorPort() {
         return new PatternSensitiveDataRedactor();
     }
@@ -154,6 +185,7 @@ public class AgentConfiguration {
             JmxDocumentPort jmxDocumentPort,
             HealMemoryPort healMemoryPort,
             CostGovernorPort costGovernorPort,
+            WorkloadProfilerPort workloadProfilerPort,
             AgentProperties properties) {
         return new SelfHealingOrchestrator(
                 trafficParserRegistry,
@@ -164,6 +196,7 @@ public class AgentConfiguration {
                 jmxDocumentPort,
                 healMemoryPort,
                 costGovernorPort,
+                workloadProfilerPort,
                 properties.maxRetries(),
                 properties.strictCompliance(),
                 properties.recalledPrecedents());

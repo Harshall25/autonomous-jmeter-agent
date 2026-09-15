@@ -14,6 +14,7 @@ import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.domain.redaction.SecretCategory;
+import com.ai.jmeter.agent.domain.workload.WorkloadModel;
 import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.HealMemoryPort;
@@ -21,6 +22,7 @@ import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
+import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.util.List;
 import org.slf4j.Logger;
@@ -50,6 +52,7 @@ public final class SelfHealingOrchestrator {
     private final JmxDocumentPort jmxDocument;
     private final HealMemoryPort memory;
     private final CostGovernorPort costGovernor;
+    private final WorkloadProfilerPort workloadProfiler;
     private final int maxAttempts;
     private final boolean strictCompliance;
     private final int recalledPrecedents;
@@ -71,6 +74,7 @@ public final class SelfHealingOrchestrator {
             JmxDocumentPort jmxDocument,
             HealMemoryPort memory,
             CostGovernorPort costGovernor,
+            WorkloadProfilerPort workloadProfiler,
             int maxAttempts,
             boolean strictCompliance,
             int recalledPrecedents) {
@@ -85,6 +89,7 @@ public final class SelfHealingOrchestrator {
         this.jmxDocument = jmxDocument;
         this.memory = memory;
         this.costGovernor = costGovernor;
+        this.workloadProfiler = workloadProfiler;
         this.maxAttempts = maxAttempts;
         this.strictCompliance = strictCompliance;
         this.recalledPrecedents = recalledPrecedents;
@@ -113,9 +118,13 @@ public final class SelfHealingOrchestrator {
 
         warnIfJdbcDriverMissing(request);
 
-        JmeterGenerationResult current =
-                agent.generateScript(redaction.redactedPayload(), request.mode());
+        WorkloadModel workload = profileWorkload(request);
+
+        JmeterGenerationResult current = agent.generateScript(
+                briefFor(redaction.redactedPayload(), workload), request.mode());
         log.info("Initial plan generated. Variables identified: {}", current.identifiedVariables());
+
+        current = applyWorkloadShape(current, workload);
 
         AppliedRepair lastRepair = null;
 
@@ -148,6 +157,64 @@ public final class SelfHealingOrchestrator {
             RepairOutcome repaired = repair(current, report);
             current = repaired.plan();
             lastRepair = repaired.applied();
+        }
+    }
+
+    /**
+     * Infers the load shape to reproduce, when telemetry was supplied.
+     *
+     * <p>A profiling failure is not fatal: the run degrades to a single-user correctness pass,
+     * which is still a useful answer, rather than losing the plan entirely over a malformed log.
+     */
+    private WorkloadModel profileWorkload(AgentRunRequest request) {
+        return request.telemetry()
+                .map(telemetry -> {
+                    try {
+                        return workloadProfiler.profile(telemetry);
+                    } catch (RuntimeException e) {
+                        log.warn("Could not profile workload from {} ({}); running as a smoke test",
+                                telemetry, e.getMessage());
+                        return WorkloadModel.smokeTest();
+                    }
+                })
+                .orElseGet(WorkloadModel::smokeTest);
+    }
+
+    /**
+     * Appends the workload shape to what the model reasons over, so the endpoint mix informs which
+     * calls the plan emphasizes rather than only how many threads run it.
+     */
+    private String briefFor(String payload, WorkloadModel workload) {
+        if (!workload.isCredible()) {
+            return payload;
+        }
+        return payload + "\n\nWorkload shape observed in production:\n" + workload.describe();
+    }
+
+    /**
+     * Sets the thread group to the inferred concurrency.
+     *
+     * <p>Applied as a structural edit rather than asked for in the prompt: thread counts are
+     * arithmetic, and a model asked to reproduce a number in XML will sometimes round it.
+     */
+    private JmeterGenerationResult applyWorkloadShape(
+            JmeterGenerationResult plan, WorkloadModel workload) {
+        if (!workload.isCredible()) {
+            return plan;
+        }
+        try {
+            String shaped = jmxDocument.apply(plan.jmxXmlContent(), List.of(
+                    new JmxMutation.ConfigureThreadGroup(
+                            workload.concurrentUsers(), workload.rampUpSeconds(), 1)));
+            log.info("Applied inferred workload: {} user(s), {}s ramp-up",
+                    workload.concurrentUsers(), workload.rampUpSeconds());
+            return new JmeterGenerationResult(
+                    shaped, plan.csvTemplateContent(),
+                    plan.identifiedVariables(), plan.executionRationale());
+        } catch (JmxDocumentException e) {
+            log.warn("Could not apply the inferred workload ({}); leaving the plan as generated",
+                    e.getMessage());
+            return plan;
         }
     }
 

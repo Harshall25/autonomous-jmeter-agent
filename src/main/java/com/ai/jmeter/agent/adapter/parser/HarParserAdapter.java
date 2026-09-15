@@ -41,6 +41,9 @@ public final class HarParserAdapter implements TrafficParserPort {
     private static final Set<String> SIGNIFICANT_HEADERS = Set.of(
             "authorization", "content-type", "accept", "cookie", "referer", "origin");
 
+    /** A 101 marks the handshake where an HTTP request becomes a WebSocket connection. */
+    private static final int HTTP_SWITCHING_PROTOCOLS = 101;
+
     private final ObjectMapper objectMapper;
     private final int maxEntries;
     private final int maxBodyCharacters;
@@ -100,6 +103,7 @@ public final class HarParserAdapter implements TrafficParserPort {
         node.put("method", request.path("method").asText("GET"));
         node.put("url", url);
         node.put("responseStatus", response.path("status").asInt(0));
+        node.put("protocol", detectProtocol(url, request, response));
 
         ObjectNode headers = node.putObject("headers");
         for (JsonNode header : request.path("headers")) {
@@ -114,6 +118,41 @@ public final class HarParserAdapter implements TrafficParserPort {
             node.put("requestBody", truncate(body));
         }
         return node;
+    }
+
+    /**
+     * Labels each request with the protocol family whose sampler should replay it.
+     *
+     * <p>A single capture routinely mixes REST, GraphQL and WebSocket traffic, and each needs a
+     * different JMeter sampler. Deciding this per request rather than per run is what lets one
+     * plan exercise a modern front end honestly; a run-level protocol setting would force the
+     * model to mislabel everything that did not match.
+     */
+    private static String detectProtocol(String url, JsonNode request, JsonNode response) {
+        String lowerUrl = url.toLowerCase();
+        if (lowerUrl.startsWith("ws://") || lowerUrl.startsWith("wss://")
+                || response.path("status").asInt(0) == HTTP_SWITCHING_PROTOCOLS) {
+            return "websocket";
+        }
+        if (contentTypeOf(request).startsWith("application/grpc")) {
+            return "grpc";
+        }
+        // A GraphQL endpoint is conventionally one URL for every operation, so the URL alone is
+        // not enough — the body is what distinguishes a query from a mutation.
+        if (lowerUrl.contains("/graphql")
+                || request.path("postData").path("text").asText("").contains("\"query\"")) {
+            return "graphql";
+        }
+        return "http";
+    }
+
+    private static String contentTypeOf(JsonNode request) {
+        for (JsonNode header : request.path("headers")) {
+            if ("content-type".equalsIgnoreCase(header.path("name").asText(""))) {
+                return header.path("value").asText("").toLowerCase();
+            }
+        }
+        return "";
     }
 
     private boolean isSignificantHeader(String name) {

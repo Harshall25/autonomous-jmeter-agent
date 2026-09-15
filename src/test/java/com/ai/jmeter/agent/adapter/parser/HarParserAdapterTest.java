@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -261,5 +262,103 @@ class HarParserAdapterTest {
                 .isInstanceOf(TrafficParsingException.class)
                 .hasMessageContaining("Unable to read HAR file")
                 .hasCauseInstanceOf(IOException.class);
+    }
+
+    @Nested
+    @DisplayName("protocol detection")
+    class ProtocolDetection {
+
+        /** Builds a one-entry capture and returns the protocol label the parser assigned. */
+        private String protocolOf(String requestJson, int status) throws IOException {
+            String har = """
+                    {"log": {"entries": [
+                      {"request": %s,
+                       "response": {"status": %d, "content": {"mimeType": "application/json"}}}
+                    ]}}
+                    """.formatted(requestJson, status);
+            return objectMapper.readTree(parser.parse(writeHar(har)))
+                    .get(0).path("protocol").asText();
+        }
+
+        @Test
+        @DisplayName("labels ordinary REST traffic as http")
+        void detectsHttp() throws IOException {
+            assertThat(protocolOf("""
+                    {"method": "GET", "url": "https://api.shop.test/v1/orders", "headers": []}""",
+                    200)).isEqualTo("http");
+        }
+
+        @Test
+        @DisplayName("labels a GraphQL endpoint by its URL")
+        void detectsGraphqlByUrl() throws IOException {
+            assertThat(protocolOf("""
+                    {"method": "POST", "url": "https://api.shop.test/graphql", "headers": []}""",
+                    200)).isEqualTo("graphql");
+        }
+
+        @Test
+        @DisplayName("labels a GraphQL call by its body when the URL does not say so")
+        void detectsGraphqlByBody() throws IOException {
+            // A GraphQL endpoint is conventionally one URL for every operation, so the body is
+            // what distinguishes a query from anything else posted there.
+            assertThat(protocolOf("""
+                    {"method": "POST", "url": "https://api.shop.test/api", "headers": [],
+                     "postData": {"text": "{\\"query\\": \\"{ orders { id } }\\"}"}}""",
+                    200)).isEqualTo("graphql");
+        }
+
+        @Test
+        @DisplayName("labels a WebSocket URL")
+        void detectsWebsocketByScheme() throws IOException {
+            assertThat(protocolOf("""
+                    {"method": "GET", "url": "wss://api.shop.test/socket", "headers": []}""",
+                    200)).isEqualTo("websocket");
+        }
+
+        @Test
+        @DisplayName("labels an unencrypted WebSocket URL")
+        void detectsInsecureWebsocketScheme() throws IOException {
+            assertThat(protocolOf("""
+                    {"method": "GET", "url": "ws://api.shop.test/socket", "headers": []}""",
+                    200)).isEqualTo("websocket");
+        }
+
+        @Test
+        @DisplayName("labels the handshake where HTTP becomes a WebSocket")
+        void detectsWebsocketByUpgradeStatus() throws IOException {
+            assertThat(protocolOf("""
+                    {"method": "GET", "url": "https://api.shop.test/live", "headers": []}""",
+                    101)).isEqualTo("websocket");
+        }
+
+        @Test
+        @DisplayName("labels gRPC by its content type")
+        void detectsGrpcByContentType() throws IOException {
+            assertThat(protocolOf("""
+                    {"method": "POST", "url": "https://api.shop.test/shop.Orders/List",
+                     "headers": [{"name": "Content-Type", "value": "application/grpc-web+proto"}]}""",
+                    200)).isEqualTo("grpc");
+        }
+
+        @Test
+        @DisplayName("labels every request in a mixed capture individually")
+        void labelsMixedCaptureIndividually() throws IOException {
+            // One plan has to speak several protocols; a run-level setting would mislabel
+            // everything that did not match.
+            String har = """
+                    {"log": {"entries": [
+                      {"request": {"method": "GET", "url": "https://api.shop.test/v1/orders", "headers": []},
+                       "response": {"status": 200, "content": {"mimeType": "application/json"}}},
+                      {"request": {"method": "POST", "url": "https://api.shop.test/graphql", "headers": []},
+                       "response": {"status": 200, "content": {"mimeType": "application/json"}}},
+                      {"request": {"method": "GET", "url": "wss://api.shop.test/live", "headers": []},
+                       "response": {"status": 101, "content": {"mimeType": ""}}}
+                    ]}}
+                    """;
+
+            assertThat(objectMapper.readTree(parser.parse(writeHar(har))))
+                    .extracting(node -> node.path("protocol").asText())
+                    .containsExactly("http", "graphql", "websocket");
+        }
     }
 }

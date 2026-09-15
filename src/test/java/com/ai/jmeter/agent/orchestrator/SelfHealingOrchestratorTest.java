@@ -34,6 +34,7 @@ import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
 import com.ai.jmeter.agent.domain.redaction.RedactedSecret;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.domain.redaction.SecretCategory;
+import com.ai.jmeter.agent.domain.workload.WorkloadModel;
 import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.HealMemoryPort;
@@ -42,6 +43,7 @@ import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
+import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.nio.file.Path;
 import java.util.List;
@@ -115,6 +117,9 @@ class SelfHealingOrchestratorTest {
     @Mock
     private CostGovernorPort costGovernor;
 
+    @Mock
+    private WorkloadProfilerPort workloadProfiler;
+
     @BeforeEach
     void setUp() {
         when(harParser.supportedMode()).thenReturn(ExecutionMode.API);
@@ -130,18 +135,19 @@ class SelfHealingOrchestratorTest {
         when(jmxDocument.apply(anyString(), anyList())).thenReturn("<plan>patched</plan>");
         when(memory.recall(anyString(), anyInt())).thenReturn(List.of());
         when(costGovernor.currentCost()).thenReturn(RunCost.empty(0));
+        when(workloadProfiler.profile(any())).thenReturn(WorkloadModel.smokeTest());
     }
 
     private SelfHealingOrchestrator orchestrator(int maxAttempts, boolean strictCompliance) {
         return new SelfHealingOrchestrator(
                 new TrafficParserRegistry(List.of(harParser)),
                 agent, executionEngine, workspace, redactor, jmxDocument, memory, costGovernor,
-                maxAttempts, strictCompliance, 3);
+                workloadProfiler, maxAttempts, strictCompliance, 3);
     }
 
     private AgentRunOutcome run(int maxAttempts) {
         return orchestrator(maxAttempts, false)
-                .run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+                .run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
     }
 
     @Nested
@@ -471,7 +477,7 @@ class SelfHealingOrchestratorTest {
         void strictComplianceRefusesRegulatedCaptures() {
             when(redactor.redact(anyString())).thenReturn(withCredential());
             SelfHealingOrchestrator strict = orchestrator(3, true);
-            AgentRunRequest request = new AgentRunRequest(ExecutionMode.API, SOURCE);
+            AgentRunRequest request = AgentRunRequest.of(ExecutionMode.API, SOURCE);
 
             assertThatExceptionOfType(CompliancePolicyViolationException.class)
                     .isThrownBy(() -> strict.run(request))
@@ -487,7 +493,7 @@ class SelfHealingOrchestratorTest {
             when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
 
             AgentRunOutcome outcome = orchestrator(3, true)
-                    .run(new AgentRunRequest(ExecutionMode.API, SOURCE));
+                    .run(AgentRunRequest.of(ExecutionMode.API, SOURCE));
 
             assertThat(outcome.redaction().foundSecrets()).isFalse();
         }
@@ -508,8 +514,8 @@ class SelfHealingOrchestratorTest {
             return new SelfHealingOrchestrator(
                     new TrafficParserRegistry(List.of(parser)),
                     agent, executionEngine, workspace, redactor, jmxDocument, memory,
-                    costGovernor, 3, false, 3)
-                    .run(new AgentRunRequest(ExecutionMode.SQL, SOURCE));
+                    costGovernor, workloadProfiler, 3, false, 3)
+                    .run(AgentRunRequest.of(ExecutionMode.SQL, SOURCE));
         }
 
         @Test
@@ -542,6 +548,97 @@ class SelfHealingOrchestratorTest {
             run(3);
 
             verify(workspace, never()).jdbcDriverAvailable();
+        }
+    }
+
+    @Nested
+    @DisplayName("workload shaping")
+    class WorkloadShaping {
+
+        private static final Path TELEMETRY = Path.of("access.log");
+
+        private static final WorkloadModel BUSY = new WorkloadModel(
+                250.0, 40, 30, 160, Map.of("GET /v1/orders", 0.7, "POST /v1/checkout", 0.3), 600);
+
+        private AgentRunOutcome runWithTelemetry() {
+            return orchestrator(3, false)
+                    .run(new AgentRunRequest(ExecutionMode.API, SOURCE, TELEMETRY));
+        }
+
+        @Test
+        @DisplayName("runs a single-user smoke test when no telemetry is supplied")
+        void noTelemetryMeansSmokeTest() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            run(3);
+
+            verifyNoInteractions(workloadProfiler);
+            verify(jmxDocument, never()).apply(anyString(), anyList());
+        }
+
+        @Test
+        @DisplayName("applies the inferred concurrency as a structural edit")
+        void appliesInferredConcurrency() {
+            // Thread counts are arithmetic; a model asked to reproduce a number in XML will
+            // sometimes round it, so this is applied rather than prompted for.
+            when(workloadProfiler.profile(TELEMETRY)).thenReturn(BUSY);
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            runWithTelemetry();
+
+            verify(jmxDocument).apply(eq("<plan>draft</plan>"),
+                    eq(List.of(new JmxMutation.ConfigureThreadGroup(40, 30, 1))));
+        }
+
+        @Test
+        @DisplayName("tells the model the endpoint mix, so it weights the right calls")
+        void briefsTheModelWithTheShape() {
+            when(workloadProfiler.profile(TELEMETRY)).thenReturn(BUSY);
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            runWithTelemetry();
+
+            ArgumentCaptor<String> brief = ArgumentCaptor.forClass(String.class);
+            verify(agent).generateScript(brief.capture(), any());
+            assertThat(brief.getValue())
+                    .contains(SAFE_TRAFFIC)
+                    .contains("Workload shape observed in production")
+                    .contains("Concurrent users : 40")
+                    .contains("GET /v1/orders");
+        }
+
+        @Test
+        @DisplayName("ignores telemetry too thin to infer anything honest from")
+        void ignoresIncredibleWorkload() {
+            when(workloadProfiler.profile(TELEMETRY)).thenReturn(WorkloadModel.smokeTest());
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            runWithTelemetry();
+
+            verify(jmxDocument, never()).apply(anyString(), anyList());
+        }
+
+        @Test
+        @DisplayName("degrades to a smoke test when the telemetry cannot be profiled")
+        void profilingFailureIsNotFatal() {
+            // A malformed log should cost the load shape, not the whole plan.
+            when(workloadProfiler.profile(TELEMETRY))
+                    .thenThrow(new IllegalStateException("log is unreadable"));
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            assertThat(runWithTelemetry().attempts()).isEqualTo(1);
+            verify(jmxDocument, never()).apply(anyString(), anyList());
+        }
+
+        @Test
+        @DisplayName("keeps the generated plan when the workload edit cannot be applied")
+        void unappliableWorkloadLeavesThePlanAlone() {
+            when(workloadProfiler.profile(TELEMETRY)).thenReturn(BUSY);
+            when(jmxDocument.apply(anyString(), anyList()))
+                    .thenThrow(new JmxDocumentException("no thread group"));
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            assertThat(runWithTelemetry().script()).isSameAs(FIRST_DRAFT);
         }
     }
 }

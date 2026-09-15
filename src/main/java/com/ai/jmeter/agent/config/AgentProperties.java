@@ -28,6 +28,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param strictCompliance           when true, refuse any capture carrying regulated material
  *                                   rather than sending it to the model in substituted form
  * @param recalledPrecedents         how many past repairs to put in front of the model per turn
+ * @param maxTopics                  cap on streaming topics forwarded to the model
+ * @param workloadRampUpSeconds      ramp-up applied when a workload shape is inferred
  * @param tokenBudget                hard ceiling on tokens per run; zero means unlimited
  * @param models                     optional per-turn model overrides; unset turns use the
  *                                   client's configured default
@@ -46,6 +48,8 @@ public record AgentProperties(
         @DefaultValue("500") int maxRecordedFailures,
         @DefaultValue("false") boolean strictCompliance,
         @DefaultValue("3") int recalledPrecedents,
+        @DefaultValue("50") int maxTopics,
+        @DefaultValue("30") int workloadRampUpSeconds,
         @DefaultValue("0") long tokenBudget,
         Map<AgentTurn, String> models) {
 
