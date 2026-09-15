@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,7 @@ public final class ProcessBuilderJmeterAdapter implements ExecutionEnginePort {
     private static final String RUN_LOG_FILE = "jmeter-run.log";
     private static final String JMETER_LOG_FILE = "jmeter.log";
     private static final String JMETER_EXECUTABLE = "jmeter";
+    private static final String SECRETS_FILENAME = "secrets.properties";
 
     private final ProcessRunner processRunner;
     private final JtlResultParser jtlResultParser;
@@ -59,13 +61,21 @@ public final class ProcessBuilderJmeterAdapter implements ExecutionEnginePort {
         // results file, and a stale one would be read as this run's evidence — so clear it first.
         deleteIfPresent(resultsFile);
 
-        List<String> command = List.of(
+        List<String> command = new ArrayList<>(List.of(
                 jmeterBinDirectory.resolve(JMETER_EXECUTABLE).toString(),
                 "-n",
                 "-t", jmxScript.toString(),
                 "-l", resultsFile.toString(),
                 "-j", workspaceDirectory.resolve(JMETER_LOG_FILE).toString(),
-                "-f");
+                "-f"));
+
+        // Credentials redacted before the plan was ever generated are bound back here, at the
+        // last possible moment, so they exist only in this process and JMeter's.
+        Path secrets = workspaceDirectory.resolve(SECRETS_FILENAME);
+        if (Files.exists(secrets)) {
+            command.add("-q");
+            command.add(secrets.toString());
+        }
 
         log.info("Executing JMeter: {}", String.join(" ", command));
         ProcessOutcome outcome = processRunner.run(

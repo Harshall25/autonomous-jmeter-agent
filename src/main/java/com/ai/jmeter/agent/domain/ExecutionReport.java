@@ -49,6 +49,14 @@ public record ExecutionReport(
         return new ExecutionReport(ExecutionStatus.NO_SAMPLES, 0, List.of(), processOutput);
     }
 
+    /**
+     * The plan was rejected before execution. Carries the validator's findings in place of process
+     * output, so the healing loop consumes it through exactly the same path as a real failure.
+     */
+    public static ExecutionReport validationFailure(String findings) {
+        return new ExecutionReport(ExecutionStatus.VALIDATION_FAILURE, 0, List.of(), findings);
+    }
+
     public boolean successful() {
         return status.successful();
     }

@@ -71,11 +71,15 @@ class HexagonalArchitectureTest {
     }
 
     @Test
-    @DisplayName("the domain layer depends on nothing but the JDK")
+    @DisplayName("the domain layer depends on nothing but the JDK and itself")
     void domainDependsOnlyOnTheJdk() {
         importsUnder("domain").forEach((source, imports) -> assertThat(imports)
-                .as("%s should import only JDK types", source)
-                .allSatisfy(imported -> assertThat(imported).startsWith("java.")));
+                .as("%s should import only JDK types or other domain types", source)
+                .allSatisfy(imported -> assertThat(imported)
+                        .satisfiesAnyOf(
+                                dependency -> assertThat(dependency).startsWith("java."),
+                                dependency -> assertThat(dependency)
+                                        .startsWith("com.ai.jmeter.agent.domain."))));
     }
 
     @Test

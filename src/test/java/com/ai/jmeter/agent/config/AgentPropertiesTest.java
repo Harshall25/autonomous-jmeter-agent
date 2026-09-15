@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import com.ai.jmeter.agent.support.TestFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -16,9 +17,7 @@ import org.springframework.context.annotation.Configuration;
 class AgentPropertiesTest {
 
     private static AgentProperties properties(Path homePath, Path libPath) {
-        return new AgentProperties(
-                homePath, 3, Path.of("workspace"), Duration.ofMinutes(10), libPath,
-                150, 2000, 200, 8000, 500);
+        return TestFixtures.properties(homePath, libPath);
     }
 
     @Test

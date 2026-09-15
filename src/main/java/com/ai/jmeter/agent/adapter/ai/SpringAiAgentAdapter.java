@@ -2,6 +2,7 @@ package com.ai.jmeter.agent.adapter.ai;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
+import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
 import com.ai.jmeter.agent.port.JmeterAgentException;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import org.slf4j.Logger;
@@ -33,6 +34,31 @@ public final class SpringAiAgentAdapter implements JmeterAgentPort {
     public JmeterGenerationResult generateScript(String parsedTraffic, ExecutionMode mode) {
         log.debug("Requesting initial plan generation for {} mode", mode);
         return callModel(promptCatalog.systemPromptFor(mode), parsedTraffic, "generation");
+    }
+
+    @Override
+    public JmxRepairPlan proposeRepairs(String structureSummary, String errorLogs) {
+        log.debug("Requesting structured repairs for a plan with {} characters of evidence",
+                errorLogs.length());
+        RepairPlanResponse response;
+        try {
+            response = chatClient.prompt()
+                    .system(promptCatalog.repairSystemPrompt(structureSummary, errorLogs))
+                    .user(promptCatalog.repairInstruction())
+                    .call()
+                    .entity(RepairPlanResponse.class);
+        } catch (RuntimeException e) {
+            throw new JmeterAgentException("LLM repair-proposal turn failed", e);
+        }
+
+        if (response == null) {
+            // Not fatal: the caller falls back to regenerating the whole plan.
+            log.warn("Repair turn returned nothing bindable; a full rewrite will be requested");
+            return JmxRepairPlan.rewrite("Model returned no structured repair plan");
+        }
+        JmxRepairPlan plan = response.toDomain();
+        log.info("Model proposed {} edit(s): {}", plan.mutations().size(), plan.diagnosis());
+        return plan;
     }
 
     @Override

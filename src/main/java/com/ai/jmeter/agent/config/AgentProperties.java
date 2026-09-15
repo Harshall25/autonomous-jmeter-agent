@@ -23,6 +23,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param maxSqlQueries              cap on distinct SQL statements forwarded to the model
  * @param maxProcessOutputCharacters cap on JMeter console output retained for diagnostics
  * @param maxRecordedFailures        cap on failing samples retained from one results file
+ * @param strictCompliance           when true, refuse any capture carrying regulated material
+ *                                   rather than sending it to the model in substituted form
  */
 @ConfigurationProperties(prefix = "agent.jmeter")
 public record AgentProperties(
@@ -35,7 +37,8 @@ public record AgentProperties(
         @DefaultValue("2000") int maxHarBodyCharacters,
         @DefaultValue("200") int maxSqlQueries,
         @DefaultValue("8000") int maxProcessOutputCharacters,
-        @DefaultValue("500") int maxRecordedFailures) {
+        @DefaultValue("500") int maxRecordedFailures,
+        @DefaultValue("false") boolean strictCompliance) {
 
     /**
      * Resolves where JDBC drivers are expected to live.

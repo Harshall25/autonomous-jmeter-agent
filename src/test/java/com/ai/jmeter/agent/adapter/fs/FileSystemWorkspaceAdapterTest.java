@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,48 @@ class FileSystemWorkspaceAdapterTest {
                     .isInstanceOf(WorkspaceException.class)
                     .hasMessageContaining("Unable to write generated artifacts")
                     .hasCauseInstanceOf(IOException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("secret bindings")
+    class SecretBindings {
+
+        @Test
+        @DisplayName("writes the withheld values as JMeter properties")
+        void writesBindings() throws IOException {
+            Path workspace = tempDir.resolve("workspace");
+            new FileSystemWorkspaceAdapter(workspace, tempDir.resolve("lib"))
+                    .writeSecretBindings(Map.of("agent.secret.credential.1", "live-token"));
+
+            assertThat(Files.readString(workspace.resolve("secrets.properties")))
+                    .contains("agent.secret.credential.1=live-token")
+                    .as("the file says why it exists, for whoever finds it later")
+                    .contains("bound at run time");
+        }
+
+        @Test
+        @DisplayName("writes an empty file when nothing was redacted")
+        void writesEmptyBindings() {
+            Path workspace = tempDir.resolve("workspace");
+            new FileSystemWorkspaceAdapter(workspace, tempDir.resolve("lib"))
+                    .writeSecretBindings(Map.of());
+
+            assertThat(workspace.resolve("secrets.properties")).exists();
+        }
+
+        @Test
+        @DisplayName("reports a workspace the bindings cannot be written to")
+        void reportsUnwritableWorkspace() throws IOException {
+            Path blocked = tempDir.resolve("blocked");
+            Files.writeString(blocked, "not a directory");
+            FileSystemWorkspaceAdapter adapter =
+                    new FileSystemWorkspaceAdapter(blocked, tempDir.resolve("lib"));
+            Map<String, String> bindings = Map.of("a", "b");
+
+            assertThatThrownBy(() -> adapter.writeSecretBindings(bindings))
+                    .isInstanceOf(WorkspaceException.class)
+                    .hasMessageContaining("Unable to write secret bindings");
         }
     }
 

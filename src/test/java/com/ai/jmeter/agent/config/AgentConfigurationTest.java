@@ -21,9 +21,8 @@ import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
+import com.ai.jmeter.agent.support.TestFixtures;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -42,16 +41,15 @@ class AgentConfigurationTest {
     private final AgentConfiguration configuration = new AgentConfiguration();
 
     private static AgentProperties properties() {
-        return new AgentProperties(
-                Path.of("/opt/jmeter/bin"), 3, Path.of("workspace"), Duration.ofMinutes(10),
-                null, 150, 2000, 200, 8000, 500);
+        return TestFixtures.properties();
     }
 
     private PromptCatalog promptCatalog() {
         return configuration.promptCatalog(
                 new ClassPathResource("prompts/api-jmeter-system.st"),
                 new ClassPathResource("prompts/sql-jmeter-system.st"),
-                new ClassPathResource("prompts/heal-script.st"));
+                new ClassPathResource("prompts/heal-script.st"),
+                new ClassPathResource("prompts/repair-plan.st"));
     }
 
     @Test
@@ -139,6 +137,8 @@ class AgentConfigurationTest {
                 mock(JmeterAgentPort.class),
                 mock(ExecutionEnginePort.class),
                 mock(WorkspacePort.class),
+                configuration.sensitiveDataRedactorPort(),
+                configuration.jmxDocumentPort(),
                 properties());
 
         assertThat(orchestrator).isNotNull();

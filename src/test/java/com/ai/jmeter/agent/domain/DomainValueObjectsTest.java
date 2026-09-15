@@ -3,6 +3,7 @@ package com.ai.jmeter.agent.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -45,6 +46,7 @@ class DomainValueObjectsTest {
             assertThat(ExecutionStatus.SAMPLE_FAILURE.successful()).isFalse();
             assertThat(ExecutionStatus.PROCESS_FAILURE.successful()).isFalse();
             assertThat(ExecutionStatus.NO_SAMPLES.successful()).isFalse();
+            assertThat(ExecutionStatus.VALIDATION_FAILURE.successful()).isFalse();
             assertThat(ExecutionStatus.valueOf("SUCCESS")).isSameAs(ExecutionStatus.SUCCESS);
         }
     }
@@ -128,7 +130,8 @@ class DomainValueObjectsTest {
                     new JmeterGenerationResult("<plan/>", "", List.of(), ""),
                     new WorkspaceArtifacts(Path.of("auto_test.jmx"), Path.of("test_data.csv")),
                     ExecutionReport.success(1, ""),
-                    attempts);
+                    attempts,
+                    RedactionResult.clean("[]"));
         }
 
         @Test

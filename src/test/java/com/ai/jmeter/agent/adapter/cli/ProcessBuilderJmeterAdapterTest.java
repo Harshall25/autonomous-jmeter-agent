@@ -96,6 +96,34 @@ class ProcessBuilderJmeterAdapterTest {
     }
 
     @Test
+    @DisplayName("binds redacted credentials back only when a secrets file exists")
+    void passesSecretsFileWhenPresent() throws IOException {
+        Files.writeString(workspace.resolve("secrets.properties"), "agent.secret.credential.1=x");
+        stubRun(ProcessOutcome.completed(0), HEADER + "\n" + PASSING_ROW, "");
+
+        adapter.execute(jmxScript);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> command = ArgumentCaptor.forClass(List.class);
+        verify(processRunner).run(command.capture(), any(), any(), any());
+        assertThat(command.getValue())
+                .containsSubsequence("-q", workspace.resolve("secrets.properties").toString());
+    }
+
+    @Test
+    @DisplayName("omits the properties flag when nothing was redacted")
+    void omitsSecretsFileWhenAbsent() {
+        stubRun(ProcessOutcome.completed(0), HEADER + "\n" + PASSING_ROW, "");
+
+        adapter.execute(jmxScript);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> command = ArgumentCaptor.forClass(List.class);
+        verify(processRunner).run(command.capture(), any(), any(), any());
+        assertThat(command.getValue()).doesNotContain("-q");
+    }
+
+    @Test
     @DisplayName("passes a run where JMeter recorded samples and no failures")
     void reportsSuccess() {
         stubRun(ProcessOutcome.completed(0), HEADER + "\n" + PASSING_ROW, "Tidying up ...");

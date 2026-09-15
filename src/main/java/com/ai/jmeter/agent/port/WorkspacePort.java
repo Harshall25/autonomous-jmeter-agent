@@ -2,6 +2,7 @@ package com.ai.jmeter.agent.port;
 
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import java.util.Map;
 
 /**
  * Driven port: materializes a generated plan onto whatever storage the execution engine reads
@@ -22,6 +23,15 @@ public interface WorkspacePort {
      * @throws WorkspaceException if the artifacts cannot be written
      */
     WorkspaceArtifacts write(JmeterGenerationResult result);
+
+    /**
+     * Persists the real values behind redaction placeholders as a JMeter properties file, so the
+     * execution engine can bind credentials that were never sent to the model.
+     *
+     * @param bindings property name to secret value, possibly empty
+     * @throws WorkspaceException if the bindings cannot be written
+     */
+    void writeSecretBindings(Map<String, String> bindings);
 
     /**
      * @return {@code true} when a JDBC driver JAR is visible on the JMeter classpath. SQL-mode

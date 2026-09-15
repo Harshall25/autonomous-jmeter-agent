@@ -8,9 +8,11 @@ import static org.mockito.Mockito.when;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
+import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
 import com.ai.jmeter.agent.port.JmeterAgentException;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
+import com.ai.jmeter.agent.support.TestFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,7 +20,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.core.io.ClassPathResource;
 
 /**
  * Exercises the reasoning adapter against a mocked {@link ChatClient}, so the full fluent chain
@@ -44,10 +45,7 @@ class SpringAiAgentAdapterTest {
 
     @BeforeEach
     void setUp() {
-        adapter = new SpringAiAgentAdapter(chatClient, new PromptCatalog(
-                new ClassPathResource("prompts/api-jmeter-system.st"),
-                new ClassPathResource("prompts/sql-jmeter-system.st"),
-                new ClassPathResource("prompts/heal-script.st")));
+        adapter = new SpringAiAgentAdapter(chatClient, TestFixtures.promptCatalog());
     }
 
     /** Wires the fluent chain so {@code prompt().system().user().call().entity()} resolves. */
@@ -133,6 +131,65 @@ class SpringAiAgentAdapterTest {
         assertThatThrownBy(() -> adapter.healScript("<broken/>", "500"))
                 .isInstanceOf(JmeterAgentException.class)
                 .hasMessageContaining("self-healing turn returned no structured result");
+    }
+
+    @Test
+    @DisplayName("asks for structural edits and narrows them into the domain type")
+    void proposeRepairsBindsMutations() {
+        stubChain();
+        when(responseSpec.entity(RepairPlanResponse.class)).thenReturn(new RepairPlanResponse(
+                "Login response was never mined", false,
+                List.of(new RepairPlanResponse.MutationCommand(
+                        "jsonPathExtractor", "login", "auth_token", "$.token",
+                        null, null, null, null, null, null, null, null,
+                        null, null, null, null, null))));
+
+        JmxRepairPlan plan = adapter.proposeRepairs("Samplers: [login]", "401 Unauthorized");
+
+        assertThat(plan.requiresFullRewrite()).isFalse();
+        assertThat(plan.mutations()).hasSize(1);
+        assertThat(plan.diagnosis()).isEqualTo("Login response was never mined");
+    }
+
+    @Test
+    @DisplayName("briefs the repair turn with the plan structure and the run evidence")
+    void proposeRepairsSendsStructureAndEvidence() {
+        stubChain();
+        when(responseSpec.entity(RepairPlanResponse.class)).thenReturn(
+                new RepairPlanResponse("d", false, List.of()));
+
+        adapter.proposeRepairs("Samplers: [login]", "401 Unauthorized");
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        assertThat(system.getValue())
+                .contains("Samplers: [login]")
+                .contains("401 Unauthorized")
+                .contains("Do NOT rewrite the plan");
+        verify(requestSpec).user("Return the smallest set of structural edits that fixes this failure.");
+    }
+
+    @Test
+    @DisplayName("asks for a rewrite when the repair turn returns nothing bindable")
+    void proposeRepairsFallsBackWhenUnbindable() {
+        stubChain();
+        when(responseSpec.entity(RepairPlanResponse.class)).thenReturn(null);
+
+        JmxRepairPlan plan = adapter.proposeRepairs("Samplers: [login]", "401");
+
+        assertThat(plan.requiresFullRewrite())
+                .as("an unusable reply must not stall the loop, it falls back to regeneration")
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("wraps a transport failure during the repair turn")
+    void wrapsRepairTurnFailure() {
+        when(chatClient.prompt()).thenThrow(new IllegalStateException("429 rate limited"));
+
+        assertThatThrownBy(() -> adapter.proposeRepairs("structure", "errors"))
+                .isInstanceOf(JmeterAgentException.class)
+                .hasMessageContaining("LLM repair-proposal turn failed");
     }
 
     @Test

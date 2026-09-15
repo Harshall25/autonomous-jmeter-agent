@@ -52,6 +52,19 @@ class ExecutionReportTest {
         }
 
         @Test
+        @DisplayName("validationFailure records a plan rejected before execution")
+        void validationFailure() {
+            ExecutionReport report =
+                    ExecutionReport.validationFailure("ERROR: Plan contains no samplers");
+
+            assertThat(report.status()).isEqualTo(ExecutionStatus.VALIDATION_FAILURE);
+            assertThat(report.successful()).isFalse();
+            assertThat(report.errorDigest())
+                    .as("the findings reach the model through the same path as a real failure")
+                    .contains("Plan contains no samplers");
+        }
+
+        @Test
         @DisplayName("noSamples records a run that exercised nothing")
         void noSamples() {
             ExecutionReport report = ExecutionReport.noSamples("nothing ran");

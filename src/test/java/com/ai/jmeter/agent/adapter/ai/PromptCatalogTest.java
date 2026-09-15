@@ -3,17 +3,14 @@ package com.ai.jmeter.agent.adapter.ai;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.support.TestFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.core.io.ClassPathResource;
 
 @DisplayName("PromptCatalog")
 class PromptCatalogTest {
 
-    private final PromptCatalog catalog = new PromptCatalog(
-            new ClassPathResource("prompts/api-jmeter-system.st"),
-            new ClassPathResource("prompts/sql-jmeter-system.st"),
-            new ClassPathResource("prompts/heal-script.st"));
+    private final PromptCatalog catalog = TestFixtures.promptCatalog();
 
     @Test
     @DisplayName("briefs the model on correlation and parameterization in API mode")
@@ -79,5 +76,25 @@ class PromptCatalogTest {
     @DisplayName("asks for the deliverable in the accompanying user turn")
     void healInstruction() {
         assertThat(catalog.healInstruction()).contains("corrected JMeter test plan");
+    }
+
+    @Test
+    @DisplayName("interpolates the plan structure and evidence into the repair brief")
+    void repairPromptInterpolatesStructure() {
+        String prompt = catalog.repairSystemPrompt(
+                "Samplers: [login, orders]", "401 Unauthorized on /v1/orders");
+
+        assertThat(prompt)
+                .contains("Samplers: [login, orders]")
+                .contains("401 Unauthorized on /v1/orders")
+                .contains("jsonPathExtractor")
+                .doesNotContain("{plan_structure}")
+                .doesNotContain("{error_logs}");
+    }
+
+    @Test
+    @DisplayName("asks for edits in the accompanying user turn")
+    void repairInstruction() {
+        assertThat(catalog.repairInstruction()).contains("smallest set of structural edits");
     }
 }

@@ -8,12 +8,16 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
+import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
+import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
+import com.ai.jmeter.agent.port.JmxDocumentPort;
+import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,8 +50,14 @@ public class AgentConfiguration {
     public PromptCatalog promptCatalog(
             @Value("classpath:/prompts/api-jmeter-system.st") Resource apiPrompt,
             @Value("classpath:/prompts/sql-jmeter-system.st") Resource sqlPrompt,
-            @Value("classpath:/prompts/heal-script.st") Resource healPrompt) {
-        return new PromptCatalog(apiPrompt, sqlPrompt, healPrompt);
+            @Value("classpath:/prompts/heal-script.st") Resource healPrompt,
+            @Value("classpath:/prompts/repair-plan.st") Resource repairPrompt) {
+        return new PromptCatalog(apiPrompt, sqlPrompt, healPrompt, repairPrompt);
+    }
+
+    @Bean
+    public JmxDocumentPort jmxDocumentPort() {
+        return new DomJmxDocumentAdapter();
     }
 
     @Bean
@@ -104,17 +114,27 @@ public class AgentConfiguration {
     }
 
     @Bean
+    public SensitiveDataRedactorPort sensitiveDataRedactorPort() {
+        return new PatternSensitiveDataRedactor();
+    }
+
+    @Bean
     public SelfHealingOrchestrator selfHealingOrchestrator(
             TrafficParserRegistry trafficParserRegistry,
             JmeterAgentPort jmeterAgentPort,
             ExecutionEnginePort executionEnginePort,
             WorkspacePort workspacePort,
+            SensitiveDataRedactorPort sensitiveDataRedactorPort,
+            JmxDocumentPort jmxDocumentPort,
             AgentProperties properties) {
         return new SelfHealingOrchestrator(
                 trafficParserRegistry,
                 jmeterAgentPort,
                 executionEnginePort,
                 workspacePort,
-                properties.maxRetries());
+                sensitiveDataRedactorPort,
+                jmxDocumentPort,
+                properties.maxRetries(),
+                properties.strictCompliance());
     }
 }

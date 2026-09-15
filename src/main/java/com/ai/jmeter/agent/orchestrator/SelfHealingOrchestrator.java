@@ -6,9 +6,18 @@ import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
+import com.ai.jmeter.agent.domain.jmx.JmxValidationResult;
+import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
+import com.ai.jmeter.agent.domain.redaction.RedactionResult;
+import com.ai.jmeter.agent.domain.redaction.SecretCategory;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
+import com.ai.jmeter.agent.port.JmxDocumentException;
+import com.ai.jmeter.agent.port.JmxDocumentPort;
+import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,11 +41,16 @@ public final class SelfHealingOrchestrator {
     private final JmeterAgentPort agent;
     private final ExecutionEnginePort executionEngine;
     private final WorkspacePort workspace;
+    private final SensitiveDataRedactorPort redactor;
+    private final JmxDocumentPort jmxDocument;
     private final int maxAttempts;
+    private final boolean strictCompliance;
 
     /**
-     * @param maxAttempts total number of JMeter runs the agent may spend on one request,
-     *                    counting the first. Must be at least one.
+     * @param maxAttempts      total number of JMeter runs the agent may spend on one request,
+     *                         counting the first. Must be at least one.
+     * @param strictCompliance when true, a capture carrying regulated material is refused rather
+     *                         than sent to the model in substituted form
      * @throws IllegalArgumentException if {@code maxAttempts} is below one
      */
     public SelfHealingOrchestrator(
@@ -44,7 +58,10 @@ public final class SelfHealingOrchestrator {
             JmeterAgentPort agent,
             ExecutionEnginePort executionEngine,
             WorkspacePort workspace,
-            int maxAttempts) {
+            SensitiveDataRedactorPort redactor,
+            JmxDocumentPort jmxDocument,
+            int maxAttempts,
+            boolean strictCompliance) {
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be at least 1, was " + maxAttempts);
         }
@@ -52,7 +69,10 @@ public final class SelfHealingOrchestrator {
         this.agent = agent;
         this.executionEngine = executionEngine;
         this.workspace = workspace;
+        this.redactor = redactor;
+        this.jmxDocument = jmxDocument;
         this.maxAttempts = maxAttempts;
+        this.strictCompliance = strictCompliance;
     }
 
     /**
@@ -69,20 +89,27 @@ public final class SelfHealingOrchestrator {
         String parsedTraffic = parserRegistry.parserFor(request.mode()).parse(request.sourceFile());
         log.debug("Minimized traffic payload is {} characters", parsedTraffic.length());
 
+        // Redaction happens before any other processing: from here on, nothing downstream —
+        // prompt, generated artifact or log line — can carry a live credential off this host.
+        RedactionResult redaction = redactor.redact(parsedTraffic);
+        enforceCompliancePolicy(redaction);
+        workspace.writeSecretBindings(redaction.propertyBindings());
+
         warnIfJdbcDriverMissing(request);
 
-        JmeterGenerationResult current = agent.generateScript(parsedTraffic, request.mode());
+        JmeterGenerationResult current =
+                agent.generateScript(redaction.redactedPayload(), request.mode());
         log.info("Initial plan generated. Variables identified: {}", current.identifiedVariables());
 
         for (int attempt = 1; ; attempt++) {
-            WorkspaceArtifacts artifacts = workspace.write(current);
-            ExecutionReport report = executionEngine.execute(artifacts.jmxScript());
+            Attempt outcome = attemptOnce(current);
+            ExecutionReport report = outcome.report();
 
             if (report.successful()) {
                 log.info("Attempt {}/{} passed with {} samples and no failures",
                         attempt, maxAttempts, report.totalSamples());
                 return new AgentRunOutcome(
-                        request.mode(), current, artifacts, report, attempt);
+                        request.mode(), current, outcome.artifacts(), report, attempt, redaction);
             }
 
             log.warn("Attempt {}/{} failed: status={} failedSamples={}",
@@ -93,8 +120,92 @@ public final class SelfHealingOrchestrator {
                 throw new SelfHealingFailedException(attempt, report);
             }
 
-            log.info("Re-prompting the model to repair the plan");
-            current = agent.healScript(current.jmxXmlContent(), report.errorDigest());
+            current = repair(current, report);
+        }
+    }
+
+    /**
+     * Validates, then executes only if validation passed.
+     *
+     * <p>Skipping execution for a plan that cannot work is the cheapest win in the loop: a JMeter
+     * startup costs tens of seconds, while catching an unresolved variable reference costs
+     * microseconds and yields strictly better evidence for the repair turn than a wall of 401s.
+     *
+     * @return the verdict, with {@code artifacts} absent when validation short-circuited the run
+     */
+    private Attempt attemptOnce(JmeterGenerationResult plan) {
+        JmxValidationResult validation = jmxDocument.validate(plan.jmxXmlContent());
+
+        if (!validation.isValid()) {
+            log.warn("Pre-flight validation rejected the plan, skipping execution:\n{}",
+                    validation.describe());
+            return new Attempt(ExecutionReport.validationFailure(validation.describe()), null);
+        }
+        if (validation.hasWarnings()) {
+            log.warn("Pre-flight warnings:\n{}", validation.describe());
+        }
+
+        WorkspaceArtifacts artifacts = workspace.write(plan);
+        return new Attempt(executionEngine.execute(artifacts.jmxScript()), artifacts);
+    }
+
+    /**
+     * Asks for structural edits first and only regenerates the plan when edits cannot express the
+     * fix, so working correlation survives a repair instead of being rediscovered each turn.
+     */
+    private JmeterGenerationResult repair(JmeterGenerationResult current, ExecutionReport report) {
+        JmxRepairPlan repairPlan = agent.proposeRepairs(
+                summarize(current), report.errorDigest());
+
+        if (repairPlan.requiresFullRewrite()) {
+            log.info("Model asked for a full rewrite: {}", repairPlan.diagnosis());
+            return agent.healScript(current.jmxXmlContent(), report.errorDigest());
+        }
+
+        try {
+            String patched = jmxDocument.apply(current.jmxXmlContent(), repairPlan.mutations());
+            log.info("Applied {} structural edit(s):\n{}",
+                    repairPlan.mutations().size(), repairPlan.describe());
+            return new JmeterGenerationResult(
+                    patched,
+                    current.csvTemplateContent(),
+                    current.identifiedVariables(),
+                    repairPlan.diagnosis());
+        } catch (JmxDocumentException e) {
+            log.warn("Structural repair could not be applied ({}); regenerating the plan instead",
+                    e.getMessage());
+            return agent.healScript(current.jmxXmlContent(), report.errorDigest());
+        }
+    }
+
+    /**
+     * Summarizes the plan for the repair turn, falling back to the raw XML when the plan is too
+     * malformed to parse — which is itself the signal the model needs.
+     */
+    private String summarize(JmeterGenerationResult plan) {
+        try {
+            return jmxDocument.describe(plan.jmxXmlContent()).describe();
+        } catch (JmxDocumentException e) {
+            return "Plan could not be parsed: " + e.getMessage();
+        }
+    }
+
+    /** @param artifacts null when pre-flight validation prevented the plan from being written. */
+    private record Attempt(ExecutionReport report, WorkspaceArtifacts artifacts) {
+    }
+
+    /**
+     * Refuses a capture whose content the configured policy will not allow off the host, even
+     * substituted. Deliberately fails the run rather than degrading silently — a compliance
+     * control that can be missed without anyone noticing is not a control.
+     */
+    private void enforceCompliancePolicy(RedactionResult redaction) {
+        if (!strictCompliance) {
+            return;
+        }
+        List<SecretCategory> violations = redaction.strictPolicyViolations();
+        if (!violations.isEmpty()) {
+            throw new CompliancePolicyViolationException(violations);
         }
     }
 

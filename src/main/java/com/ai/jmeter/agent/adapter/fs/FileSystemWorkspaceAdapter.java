@@ -5,10 +5,13 @@ import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.port.WorkspaceException;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +29,9 @@ public final class FileSystemWorkspaceAdapter implements WorkspacePort {
 
     private static final String JMX_FILENAME = "auto_test.jmx";
     private static final String CSV_FILENAME = "test_data.csv";
+
+    /** Consumed by JMeter via {@code -q}; see {@code ProcessBuilderJmeterAdapter}. */
+    public static final String SECRETS_FILENAME = "secrets.properties";
 
     /** Filename fragments that identify a JDBC driver JAR across the common vendors. */
     private static final List<String> JDBC_JAR_TOKENS = List.of(
@@ -54,6 +60,24 @@ public final class FileSystemWorkspaceAdapter implements WorkspacePort {
         } catch (IOException e) {
             throw new WorkspaceException(
                     "Unable to write generated artifacts to " + workspaceDirectory, e);
+        }
+    }
+
+    @Override
+    public void writeSecretBindings(Map<String, String> bindings) {
+        try {
+            Files.createDirectories(workspaceDirectory);
+            Properties properties = new Properties();
+            properties.putAll(bindings);
+            try (Writer writer = Files.newBufferedWriter(
+                    workspaceDirectory.resolve(SECRETS_FILENAME), StandardCharsets.UTF_8)) {
+                properties.store(writer, "Values withheld from the model; bound at run time.");
+            }
+            log.info("Wrote {} secret binding(s) for JMeter to consume at run time",
+                    bindings.size());
+        } catch (IOException e) {
+            throw new WorkspaceException(
+                    "Unable to write secret bindings to " + workspaceDirectory, e);
         }
     }
 

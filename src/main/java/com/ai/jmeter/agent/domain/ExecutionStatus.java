@@ -20,7 +20,10 @@ public enum ExecutionStatus {
     PROCESS_FAILURE,
 
     /** JMeter exited cleanly but wrote no samples, so nothing was actually exercised. */
-    NO_SAMPLES;
+    NO_SAMPLES,
+
+    /** Pre-flight validation rejected the plan, so no execution was attempted at all. */
+    VALIDATION_FAILURE;
 
     public boolean successful() {
         return this == SUCCESS;

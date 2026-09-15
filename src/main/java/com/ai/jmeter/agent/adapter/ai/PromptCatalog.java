@@ -21,14 +21,23 @@ public final class PromptCatalog {
     private static final String HEAL_INSTRUCTION =
             "Return the corrected JMeter test plan and its matching CSV data set.";
 
+    private static final String REPAIR_INSTRUCTION =
+            "Return the smallest set of structural edits that fixes this failure.";
+
     private final PromptTemplate apiSystemPrompt;
     private final PromptTemplate sqlSystemPrompt;
     private final PromptTemplate healPrompt;
+    private final PromptTemplate repairPlanPrompt;
 
-    public PromptCatalog(Resource apiSystemPrompt, Resource sqlSystemPrompt, Resource healPrompt) {
+    public PromptCatalog(
+            Resource apiSystemPrompt,
+            Resource sqlSystemPrompt,
+            Resource healPrompt,
+            Resource repairPlanPrompt) {
         this.apiSystemPrompt = new PromptTemplate(apiSystemPrompt);
         this.sqlSystemPrompt = new PromptTemplate(sqlSystemPrompt);
         this.healPrompt = new PromptTemplate(healPrompt);
+        this.repairPlanPrompt = new PromptTemplate(repairPlanPrompt);
     }
 
     /**
@@ -59,5 +68,23 @@ public final class PromptCatalog {
     /** @return the user turn accompanying {@link #healSystemPrompt(String, String)}. */
     public String healInstruction() {
         return HEAL_INSTRUCTION;
+    }
+
+    /**
+     * Renders the structured-repair brief.
+     *
+     * @param planStructure what the failing plan does and how its variables flow
+     * @param errorLogs     the evidence digest from the failing run
+     * @return the system instructions for the repair-proposal turn
+     */
+    public String repairSystemPrompt(String planStructure, String errorLogs) {
+        return repairPlanPrompt.render(Map.of(
+                "plan_structure", planStructure,
+                "error_logs", errorLogs));
+    }
+
+    /** @return the user turn accompanying {@link #repairSystemPrompt(String, String)}. */
+    public String repairInstruction() {
+        return REPAIR_INSTRUCTION;
     }
 }
