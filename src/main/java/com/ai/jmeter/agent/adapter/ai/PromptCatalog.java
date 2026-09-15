@@ -1,0 +1,63 @@
+package com.ai.jmeter.agent.adapter.ai;
+
+import com.ai.jmeter.agent.domain.ExecutionMode;
+import java.util.Map;
+import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.core.io.Resource;
+
+/**
+ * Loads and manages the agent's three instruction sets as Spring AI {@link PromptTemplate}s.
+ *
+ * <p>Keeping the prompts in {@code .st} resources rather than string constants means they can be
+ * reviewed, diffed and tuned without recompiling — prompt text is behaviour in an agentic system,
+ * and behaviour belongs under version control in its own right.
+ */
+public final class PromptCatalog {
+
+    /**
+     * Paired with the healing system prompt, which already carries the script and the logs. The
+     * user turn only has to ask for the deliverable.
+     */
+    private static final String HEAL_INSTRUCTION =
+            "Return the corrected JMeter test plan and its matching CSV data set.";
+
+    private final PromptTemplate apiSystemPrompt;
+    private final PromptTemplate sqlSystemPrompt;
+    private final PromptTemplate healPrompt;
+
+    public PromptCatalog(Resource apiSystemPrompt, Resource sqlSystemPrompt, Resource healPrompt) {
+        this.apiSystemPrompt = new PromptTemplate(apiSystemPrompt);
+        this.sqlSystemPrompt = new PromptTemplate(sqlSystemPrompt);
+        this.healPrompt = new PromptTemplate(healPrompt);
+    }
+
+    /**
+     * @param mode the ingestion mode being run
+     * @return the system instructions briefing the model for that mode
+     */
+    public String systemPromptFor(ExecutionMode mode) {
+        PromptTemplate template = mode == ExecutionMode.SQL ? sqlSystemPrompt : apiSystemPrompt;
+        // Returned via getTemplate() rather than render(): these prompts contain literal
+        // ${variable_name} JMeter syntax that the model must receive verbatim, and the
+        // StringTemplate renderer would try to resolve the inner braces as placeholders.
+        return template.getTemplate();
+    }
+
+    /**
+     * Renders the self-healing brief, interpolating the failed plan and the run evidence.
+     *
+     * @param currentScript the JMX that failed
+     * @param errorLogs     the digest of what went wrong
+     * @return the system instructions for the repair turn
+     */
+    public String healSystemPrompt(String currentScript, String errorLogs) {
+        return healPrompt.render(Map.of(
+                "current_script", currentScript,
+                "error_logs", errorLogs));
+    }
+
+    /** @return the user turn accompanying {@link #healSystemPrompt(String, String)}. */
+    public String healInstruction() {
+        return HEAL_INSTRUCTION;
+    }
+}

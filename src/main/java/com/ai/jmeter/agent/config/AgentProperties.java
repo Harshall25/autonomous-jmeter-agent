@@ -1,0 +1,56 @@
+package com.ai.jmeter.agent.config;
+
+import java.nio.file.Path;
+import java.time.Duration;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
+
+/**
+ * Operator-facing configuration for the agent, bound from {@code agent.jmeter.*}.
+ *
+ * @param homePath                   JMeter's {@code bin} directory, holding the {@code jmeter}
+ *                                   launcher
+ * @param maxRetries                 total JMeter runs the agent may spend on one request,
+ *                                   counting the first attempt. Three means one generation and
+ *                                   up to two repairs.
+ * @param workspace                  directory that generated plans, test data and results are
+ *                                   written to
+ * @param executionTimeout           how long a single JMeter run may take before it is killed
+ * @param libPath                    JMeter's {@code lib} directory; derived from
+ *                                   {@code homePath} when not set
+ * @param maxHarEntries              cap on HAR requests forwarded to the model
+ * @param maxHarBodyCharacters       cap on characters kept from any one request body
+ * @param maxSqlQueries              cap on distinct SQL statements forwarded to the model
+ * @param maxProcessOutputCharacters cap on JMeter console output retained for diagnostics
+ * @param maxRecordedFailures        cap on failing samples retained from one results file
+ */
+@ConfigurationProperties(prefix = "agent.jmeter")
+public record AgentProperties(
+        @DefaultValue("/opt/jmeter/bin") Path homePath,
+        @DefaultValue("3") int maxRetries,
+        @DefaultValue("workspace") Path workspace,
+        @DefaultValue("10m") Duration executionTimeout,
+        Path libPath,
+        @DefaultValue("150") int maxHarEntries,
+        @DefaultValue("2000") int maxHarBodyCharacters,
+        @DefaultValue("200") int maxSqlQueries,
+        @DefaultValue("8000") int maxProcessOutputCharacters,
+        @DefaultValue("500") int maxRecordedFailures) {
+
+    /**
+     * Resolves where JDBC drivers are expected to live.
+     *
+     * <p>{@code homePath} points at JMeter's {@code bin} directory, so its sibling {@code lib} is
+     * the conventional location. An explicit {@code libPath} overrides that for non-standard
+     * layouts.
+     *
+     * @return the directory to scan for driver JARs
+     */
+    public Path resolvedLibPath() {
+        if (libPath != null) {
+            return libPath;
+        }
+        Path jmeterRoot = homePath.getParent();
+        return jmeterRoot == null ? homePath.resolve("lib") : jmeterRoot.resolve("lib");
+    }
+}
