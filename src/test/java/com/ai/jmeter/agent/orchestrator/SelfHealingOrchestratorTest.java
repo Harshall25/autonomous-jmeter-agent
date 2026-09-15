@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -23,6 +24,8 @@ import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.SampleFailure;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.domain.jmx.JmxMutation;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
 import com.ai.jmeter.agent.domain.jmx.JmxStructure;
@@ -31,7 +34,9 @@ import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
 import com.ai.jmeter.agent.domain.redaction.RedactedSecret;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.domain.redaction.SecretCategory;
+import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
+import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
@@ -104,6 +109,12 @@ class SelfHealingOrchestratorTest {
     @Mock
     private JmxDocumentPort jmxDocument;
 
+    @Mock
+    private HealMemoryPort memory;
+
+    @Mock
+    private CostGovernorPort costGovernor;
+
     @BeforeEach
     void setUp() {
         when(harParser.supportedMode()).thenReturn(ExecutionMode.API);
@@ -112,18 +123,20 @@ class SelfHealingOrchestratorTest {
         when(workspace.write(any())).thenReturn(ARTIFACTS);
         when(agent.generateScript(anyString(), any())).thenReturn(FIRST_DRAFT);
         when(agent.healScript(anyString(), anyString())).thenReturn(REWRITTEN);
-        when(agent.proposeRepairs(anyString(), anyString())).thenReturn(MUTATION_REPAIR);
+        when(agent.proposeRepairs(anyString(), anyString(), anyList())).thenReturn(MUTATION_REPAIR);
         when(jmxDocument.validate(anyString())).thenReturn(JmxValidationResult.valid());
         when(jmxDocument.describe(anyString())).thenReturn(
                 new JmxStructure(List.of("login"), List.of("user"), List.of("user")));
         when(jmxDocument.apply(anyString(), anyList())).thenReturn("<plan>patched</plan>");
+        when(memory.recall(anyString(), anyInt())).thenReturn(List.of());
+        when(costGovernor.currentCost()).thenReturn(RunCost.empty(0));
     }
 
     private SelfHealingOrchestrator orchestrator(int maxAttempts, boolean strictCompliance) {
         return new SelfHealingOrchestrator(
                 new TrafficParserRegistry(List.of(harParser)),
-                agent, executionEngine, workspace, redactor, jmxDocument,
-                maxAttempts, strictCompliance);
+                agent, executionEngine, workspace, redactor, jmxDocument, memory, costGovernor,
+                maxAttempts, strictCompliance, 3);
     }
 
     private AgentRunOutcome run(int maxAttempts) {
@@ -149,7 +162,7 @@ class SelfHealingOrchestratorTest {
             assertThat(outcome.artifacts()).isSameAs(ARTIFACTS);
 
             verify(agent).generateScript(SAFE_TRAFFIC, ExecutionMode.API);
-            verify(agent, never()).proposeRepairs(anyString(), anyString());
+            verify(agent, never()).proposeRepairs(anyString(), anyString(), anyList());
             verify(agent, never()).healScript(anyString(), anyString());
             verify(executionEngine, times(1)).execute(ARTIFACTS.jmxScript());
         }
@@ -168,7 +181,7 @@ class SelfHealingOrchestratorTest {
                     .isEqualTo("<plan>patched</plan>");
 
             verify(agent, times(1)).generateScript(anyString(), any());
-            verify(agent, times(1)).proposeRepairs(anyString(), anyString());
+            verify(agent, times(1)).proposeRepairs(anyString(), anyString(), anyList());
             verify(executionEngine, times(2)).execute(any());
             verify(workspace, times(2)).write(any());
         }
@@ -182,7 +195,7 @@ class SelfHealingOrchestratorTest {
 
             ArgumentCaptor<String> structure = ArgumentCaptor.forClass(String.class);
             ArgumentCaptor<String> evidence = ArgumentCaptor.forClass(String.class);
-            verify(agent).proposeRepairs(structure.capture(), evidence.capture());
+            verify(agent).proposeRepairs(structure.capture(), evidence.capture(), anyList());
 
             assertThat(structure.getValue()).contains("Samplers: [login]");
             assertThat(evidence.getValue())
@@ -204,7 +217,7 @@ class SelfHealingOrchestratorTest {
                     });
 
             verify(executionEngine, times(3)).execute(any());
-            verify(agent, times(2)).proposeRepairs(anyString(), anyString());
+            verify(agent, times(2)).proposeRepairs(anyString(), anyString(), anyList());
         }
 
         @Test
@@ -215,7 +228,7 @@ class SelfHealingOrchestratorTest {
             assertThatExceptionOfType(SelfHealingFailedException.class).isThrownBy(() -> run(1));
 
             verify(executionEngine, times(1)).execute(any());
-            verify(agent, never()).proposeRepairs(anyString(), anyString());
+            verify(agent, never()).proposeRepairs(anyString(), anyString(), anyList());
         }
 
         @Test
@@ -284,7 +297,7 @@ class SelfHealingOrchestratorTest {
             run(3);
 
             ArgumentCaptor<String> evidence = ArgumentCaptor.forClass(String.class);
-            verify(agent).proposeRepairs(anyString(), evidence.capture());
+            verify(agent).proposeRepairs(anyString(), evidence.capture(), anyList());
             assertThat(evidence.getValue())
                     .contains("VALIDATION_FAILURE")
                     .contains("Plan contains no samplers");
@@ -347,7 +360,7 @@ class SelfHealingOrchestratorTest {
         @Test
         @DisplayName("regenerates the plan when the model asks for a rewrite")
         void fallsBackToRewriteOnRequest() {
-            when(agent.proposeRepairs(anyString(), anyString()))
+            when(agent.proposeRepairs(anyString(), anyString(), anyList()))
                     .thenReturn(JmxRepairPlan.rewrite("Plan is structurally beyond patching"));
             when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, CLEAN_RUN);
 
@@ -361,7 +374,7 @@ class SelfHealingOrchestratorTest {
         @Test
         @DisplayName("treats an empty edit list as a request to rewrite")
         void emptyMutationListFallsBack() {
-            when(agent.proposeRepairs(anyString(), anyString()))
+            when(agent.proposeRepairs(anyString(), anyString(), anyList()))
                     .thenReturn(new JmxRepairPlan(List.of(), "nothing to change", false));
             when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, CLEAN_RUN);
 
@@ -391,7 +404,7 @@ class SelfHealingOrchestratorTest {
             run(3);
 
             ArgumentCaptor<String> structure = ArgumentCaptor.forClass(String.class);
-            verify(agent).proposeRepairs(structure.capture(), anyString());
+            verify(agent).proposeRepairs(structure.capture(), anyString(), anyList());
             assertThat(structure.getValue())
                     .contains("Plan could not be parsed")
                     .contains("mismatched tag at line 4");
@@ -494,7 +507,8 @@ class SelfHealingOrchestratorTest {
         private AgentRunOutcome runSqlMode(TrafficParserPort parser) {
             return new SelfHealingOrchestrator(
                     new TrafficParserRegistry(List.of(parser)),
-                    agent, executionEngine, workspace, redactor, jmxDocument, 3, false)
+                    agent, executionEngine, workspace, redactor, jmxDocument, memory,
+                    costGovernor, 3, false, 3)
                     .run(new AgentRunRequest(ExecutionMode.SQL, SOURCE));
         }
 

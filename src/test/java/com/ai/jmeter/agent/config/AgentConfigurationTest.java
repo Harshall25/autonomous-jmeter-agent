@@ -75,8 +75,11 @@ class AgentConfigurationTest {
     @Test
     @DisplayName("binds the reasoning port to the Spring AI adapter")
     void bindsAgentPort() {
-        JmeterAgentPort port =
-                configuration.jmeterAgentPort(mock(ChatClient.class), promptCatalog());
+        JmeterAgentPort port = configuration.jmeterAgentPort(
+                mock(ChatClient.class),
+                promptCatalog(),
+                configuration.costGovernorPort(properties()),
+                configuration.modelRouter(properties()));
 
         assertThat(port).isInstanceOf(SpringAiAgentAdapter.class);
     }
@@ -139,6 +142,8 @@ class AgentConfigurationTest {
                 mock(WorkspacePort.class),
                 configuration.sensitiveDataRedactorPort(),
                 configuration.jmxDocumentPort(),
+                configuration.healMemoryPort(new ObjectMapper(), properties()),
+                configuration.costGovernorPort(properties()),
                 properties());
 
         assertThat(orchestrator).isNotNull();

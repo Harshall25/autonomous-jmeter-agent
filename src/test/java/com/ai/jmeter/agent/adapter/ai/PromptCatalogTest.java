@@ -3,7 +3,9 @@ package com.ai.jmeter.agent.adapter.ai;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.support.TestFixtures;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -82,7 +84,7 @@ class PromptCatalogTest {
     @DisplayName("interpolates the plan structure and evidence into the repair brief")
     void repairPromptInterpolatesStructure() {
         String prompt = catalog.repairSystemPrompt(
-                "Samplers: [login, orders]", "401 Unauthorized on /v1/orders");
+                "Samplers: [login, orders]", "401 Unauthorized on /v1/orders", List.of());
 
         assertThat(prompt)
                 .contains("Samplers: [login, orders]")
@@ -96,5 +98,31 @@ class PromptCatalogTest {
     @DisplayName("asks for edits in the accompanying user turn")
     void repairInstruction() {
         assertThat(catalog.repairInstruction()).contains("smallest set of structural edits");
+    }
+
+    @Test
+    @DisplayName("states plainly when there is no precedent, rather than leaving a gap")
+    void repairPromptWithoutPrecedents() {
+        // An empty section reads to a model as an omission it should fill in; "none on record"
+        // is information.
+        assertThat(catalog.repairSystemPrompt("Samplers: [login]", "401", List.of()))
+                .contains("None on record");
+    }
+
+    @Test
+    @DisplayName("puts recalled repairs in front of the model, including ones that failed")
+    void repairPromptWithPrecedents() {
+        String prompt = catalog.repairSystemPrompt("Samplers: [login]", "401", List.of(
+                new HealPrecedent("SAMPLE_FAILURE|401:login", "missed correlation",
+                        List.of("extract ${auth_token} from login"), true),
+                new HealPrecedent("SAMPLE_FAILURE|401:login", "wrong guess",
+                        List.of("set header X-Auth"), false)));
+
+        assertThat(prompt)
+                .contains("missed correlation")
+                .contains("Edits that fixed it")
+                .contains("wrong guess")
+                .contains("Edits that did NOT fix it")
+                .doesNotContain("None on record");
     }
 }

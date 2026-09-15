@@ -21,6 +21,7 @@ public record ExecutionReport(
         String processOutput) {
 
     private static final int DIGEST_FAILURE_LIMIT = 25;
+    private static final int SIGNATURE_SAMPLE_LIMIT = 8;
 
     public ExecutionReport {
         processOutput = processOutput == null ? "" : processOutput;
@@ -63,6 +64,29 @@ public record ExecutionReport(
 
     public int failedSamples() {
         return failures.size();
+    }
+
+    /**
+     * A stable fingerprint of what went wrong, used to look up past repairs.
+     *
+     * <p>Deliberately lossy. It keeps the status and the distinct sampler/response-code pairs and
+     * discards timings, counts and message text, so the same defect on the same endpoint produces
+     * the same signature across runs and across services with similar shapes. A signature that
+     * included volatile detail would never match twice and the memory would never pay off.
+     *
+     * @return the failure fingerprint
+     */
+    public String failureSignature() {
+        if (failures.isEmpty()) {
+            return status.name();
+        }
+        String samplers = failures.stream()
+                .map(failure -> failure.responseCode() + ":" + failure.label())
+                .distinct()
+                .sorted()
+                .limit(SIGNATURE_SAMPLE_LIMIT)
+                .collect(Collectors.joining(","));
+        return status.name() + "|" + samplers;
     }
 
     /**

@@ -1,7 +1,9 @@
 package com.ai.jmeter.agent.config;
 
+import com.ai.jmeter.agent.domain.cost.AgentTurn;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -25,6 +27,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param maxRecordedFailures        cap on failing samples retained from one results file
  * @param strictCompliance           when true, refuse any capture carrying regulated material
  *                                   rather than sending it to the model in substituted form
+ * @param recalledPrecedents         how many past repairs to put in front of the model per turn
+ * @param tokenBudget                hard ceiling on tokens per run; zero means unlimited
+ * @param models                     optional per-turn model overrides; unset turns use the
+ *                                   client's configured default
  */
 @ConfigurationProperties(prefix = "agent.jmeter")
 public record AgentProperties(
@@ -38,7 +44,10 @@ public record AgentProperties(
         @DefaultValue("200") int maxSqlQueries,
         @DefaultValue("8000") int maxProcessOutputCharacters,
         @DefaultValue("500") int maxRecordedFailures,
-        @DefaultValue("false") boolean strictCompliance) {
+        @DefaultValue("false") boolean strictCompliance,
+        @DefaultValue("3") int recalledPrecedents,
+        @DefaultValue("0") long tokenBudget,
+        Map<AgentTurn, String> models) {
 
     /**
      * Resolves where JDBC drivers are expected to live.
@@ -49,6 +58,11 @@ public record AgentProperties(
      *
      * @return the directory to scan for driver JARs
      */
+    /** @return per-turn model routing, empty when the operator has not opted into it. */
+    public Map<AgentTurn, String> modelsByTurn() {
+        return models == null ? Map.of() : Map.copyOf(models);
+    }
+
     public Path resolvedLibPath() {
         if (libPath != null) {
             return libPath;

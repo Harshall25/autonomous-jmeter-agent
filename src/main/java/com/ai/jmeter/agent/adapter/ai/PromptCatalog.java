@@ -1,7 +1,10 @@
 package com.ai.jmeter.agent.adapter.ai;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.domain.memory.HealPrecedent;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.core.io.Resource;
 
@@ -75,12 +78,30 @@ public final class PromptCatalog {
      *
      * @param planStructure what the failing plan does and how its variables flow
      * @param errorLogs     the evidence digest from the failing run
+     * @param precedents    past repairs for similar failures, possibly empty
      * @return the system instructions for the repair-proposal turn
      */
-    public String repairSystemPrompt(String planStructure, String errorLogs) {
+    public String repairSystemPrompt(
+            String planStructure, String errorLogs, List<HealPrecedent> precedents) {
         return repairPlanPrompt.render(Map.of(
                 "plan_structure", planStructure,
-                "error_logs", errorLogs));
+                "error_logs", errorLogs,
+                "precedents", renderPrecedents(precedents)));
+    }
+
+    /**
+     * Renders recalled repairs, or an explicit statement that there are none.
+     *
+     * <p>Never left blank: an empty section reads to a model as an omission it should fill in,
+     * whereas "none on record" is information.
+     */
+    private String renderPrecedents(List<HealPrecedent> precedents) {
+        if (precedents.isEmpty()) {
+            return "None on record. Diagnose this failure from the evidence alone.";
+        }
+        return precedents.stream()
+                .map(HealPrecedent::describe)
+                .collect(Collectors.joining("\n\n"));
     }
 
     /** @return the user turn accompanying {@link #repairSystemPrompt(String, String)}. */

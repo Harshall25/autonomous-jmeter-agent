@@ -3,6 +3,8 @@ package com.ai.jmeter.agent.port;
 import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
+import com.ai.jmeter.agent.domain.memory.HealPrecedent;
+import java.util.List;
 
 /**
  * Driven port: the reasoning half of the agent.
@@ -32,10 +34,12 @@ public interface JmeterAgentPort {
      *
      * @param structureSummary what the plan currently does and how its variables flow
      * @param errorLogs        the evidence digest from the failing run
+     * @param precedents       past repairs for similar failures, possibly empty
      * @return the proposed edits, or a signal that the plan needs rewriting outright
      * @throws JmeterAgentException if the model cannot be reached or returns an unusable answer
      */
-    JmxRepairPlan proposeRepairs(String structureSummary, String errorLogs);
+    JmxRepairPlan proposeRepairs(
+            String structureSummary, String errorLogs, List<HealPrecedent> precedents);
 
     /**
      * Regenerates a failing plan from scratch.

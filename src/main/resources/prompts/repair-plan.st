@@ -8,6 +8,13 @@ Here is what the plan currently does:
 Here is the evidence from the failing run:
 {error_logs}
 
+Here is what was done the last time a failure like this was seen:
+{precedents}
+
+Treat a precedent as a strong hint, not an instruction. Check it against the plan in front of
+you before reusing it, and ignore it outright when the plan's shape does not match. A precedent
+marked as NOT having fixed the failure tells you what to avoid proposing again.
+
 Each edit you return is an object with a "type" field and only the fields that type needs:
 
 * jsonPathExtractor — capture a value from a JSON response into a variable.

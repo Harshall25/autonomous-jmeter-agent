@@ -6,12 +6,17 @@ import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.jmx.JmxMutation;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
 import com.ai.jmeter.agent.domain.jmx.JmxValidationResult;
+import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.domain.redaction.SecretCategory;
+import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
+import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
@@ -43,14 +48,18 @@ public final class SelfHealingOrchestrator {
     private final WorkspacePort workspace;
     private final SensitiveDataRedactorPort redactor;
     private final JmxDocumentPort jmxDocument;
+    private final HealMemoryPort memory;
+    private final CostGovernorPort costGovernor;
     private final int maxAttempts;
     private final boolean strictCompliance;
+    private final int recalledPrecedents;
 
     /**
      * @param maxAttempts      total number of JMeter runs the agent may spend on one request,
      *                         counting the first. Must be at least one.
      * @param strictCompliance when true, a capture carrying regulated material is refused rather
      *                         than sent to the model in substituted form
+     * @param recalledPrecedents how many past repairs to put in front of the model per turn
      * @throws IllegalArgumentException if {@code maxAttempts} is below one
      */
     public SelfHealingOrchestrator(
@@ -60,8 +69,11 @@ public final class SelfHealingOrchestrator {
             WorkspacePort workspace,
             SensitiveDataRedactorPort redactor,
             JmxDocumentPort jmxDocument,
+            HealMemoryPort memory,
+            CostGovernorPort costGovernor,
             int maxAttempts,
-            boolean strictCompliance) {
+            boolean strictCompliance,
+            int recalledPrecedents) {
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be at least 1, was " + maxAttempts);
         }
@@ -71,8 +83,11 @@ public final class SelfHealingOrchestrator {
         this.workspace = workspace;
         this.redactor = redactor;
         this.jmxDocument = jmxDocument;
+        this.memory = memory;
+        this.costGovernor = costGovernor;
         this.maxAttempts = maxAttempts;
         this.strictCompliance = strictCompliance;
+        this.recalledPrecedents = recalledPrecedents;
     }
 
     /**
@@ -85,6 +100,7 @@ public final class SelfHealingOrchestrator {
      */
     public AgentRunOutcome run(AgentRunRequest request) {
         log.info("Starting agentic run in {} mode from {}", request.mode(), request.sourceFile());
+        costGovernor.beginRun();
 
         String parsedTraffic = parserRegistry.parserFor(request.mode()).parse(request.sourceFile());
         log.debug("Minimized traffic payload is {} characters", parsedTraffic.length());
@@ -101,6 +117,8 @@ public final class SelfHealingOrchestrator {
                 agent.generateScript(redaction.redactedPayload(), request.mode());
         log.info("Initial plan generated. Variables identified: {}", current.identifiedVariables());
 
+        AppliedRepair lastRepair = null;
+
         for (int attempt = 1; ; attempt++) {
             Attempt outcome = attemptOnce(current);
             ExecutionReport report = outcome.report();
@@ -108,20 +126,38 @@ public final class SelfHealingOrchestrator {
             if (report.successful()) {
                 log.info("Attempt {}/{} passed with {} samples and no failures",
                         attempt, maxAttempts, report.totalSamples());
+                recordPrecedent(lastRepair, true);
+                log.info("Run cost: {}", costGovernor.currentCost().describe());
                 return new AgentRunOutcome(
-                        request.mode(), current, outcome.artifacts(), report, attempt, redaction);
+                        request.mode(), current, outcome.artifacts(), report, attempt,
+                        redaction, costGovernor.currentCost());
             }
 
             log.warn("Attempt {}/{} failed: status={} failedSamples={}",
                     attempt, maxAttempts, report.status(), report.failedSamples());
+
+            // The repair that preceded this attempt did not work. Recording that is as valuable
+            // as recording a success: it stops the next run proposing the same dead end.
+            recordPrecedent(lastRepair, false);
 
             if (attempt >= maxAttempts) {
                 log.error("Retry budget exhausted after {} attempt(s); giving up", attempt);
                 throw new SelfHealingFailedException(attempt, report);
             }
 
-            current = repair(current, report);
+            RepairOutcome repaired = repair(current, report);
+            current = repaired.plan();
+            lastRepair = repaired.applied();
         }
+    }
+
+    /** Files a repair against the failure it was meant to fix, once the verdict is in. */
+    private void recordPrecedent(AppliedRepair repair, boolean worked) {
+        if (repair == null) {
+            return;
+        }
+        memory.remember(new HealPrecedent(
+                repair.signature(), repair.diagnosis(), repair.edits(), worked));
     }
 
     /**
@@ -153,28 +189,36 @@ public final class SelfHealingOrchestrator {
      * Asks for structural edits first and only regenerates the plan when edits cannot express the
      * fix, so working correlation survives a repair instead of being rediscovered each turn.
      */
-    private JmeterGenerationResult repair(JmeterGenerationResult current, ExecutionReport report) {
+    private RepairOutcome repair(JmeterGenerationResult current, ExecutionReport report) {
+        String signature = report.failureSignature();
         JmxRepairPlan repairPlan = agent.proposeRepairs(
-                summarize(current), report.errorDigest());
+                summarize(current), report.errorDigest(), memory.recall(signature, recalledPrecedents));
 
         if (repairPlan.requiresFullRewrite()) {
             log.info("Model asked for a full rewrite: {}", repairPlan.diagnosis());
-            return agent.healScript(current.jmxXmlContent(), report.errorDigest());
+            return RepairOutcome.rewritten(
+                    agent.healScript(current.jmxXmlContent(), report.errorDigest()));
         }
 
         try {
             String patched = jmxDocument.apply(current.jmxXmlContent(), repairPlan.mutations());
             log.info("Applied {} structural edit(s):\n{}",
                     repairPlan.mutations().size(), repairPlan.describe());
-            return new JmeterGenerationResult(
-                    patched,
-                    current.csvTemplateContent(),
-                    current.identifiedVariables(),
-                    repairPlan.diagnosis());
+            return new RepairOutcome(
+                    new JmeterGenerationResult(
+                            patched,
+                            current.csvTemplateContent(),
+                            current.identifiedVariables(),
+                            repairPlan.diagnosis()),
+                    new AppliedRepair(
+                            signature,
+                            repairPlan.diagnosis(),
+                            repairPlan.mutations().stream().map(JmxMutation::describe).toList()));
         } catch (JmxDocumentException e) {
             log.warn("Structural repair could not be applied ({}); regenerating the plan instead",
                     e.getMessage());
-            return agent.healScript(current.jmxXmlContent(), report.errorDigest());
+            return RepairOutcome.rewritten(
+                    agent.healScript(current.jmxXmlContent(), report.errorDigest()));
         }
     }
 
@@ -192,6 +236,21 @@ public final class SelfHealingOrchestrator {
 
     /** @param artifacts null when pre-flight validation prevented the plan from being written. */
     private record Attempt(ExecutionReport report, WorkspaceArtifacts artifacts) {
+    }
+
+    /**
+     * @param applied null for a full rewrite, which has no discrete edits worth remembering —
+     *                "the model wrote a different plan" is not advice the next run can act on
+     */
+    private record RepairOutcome(JmeterGenerationResult plan, AppliedRepair applied) {
+
+        static RepairOutcome rewritten(JmeterGenerationResult plan) {
+            return new RepairOutcome(plan, null);
+        }
+    }
+
+    /** A structural repair awaiting the verdict of the run that follows it. */
+    private record AppliedRepair(String signature, String diagnosis, List<String> edits) {
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.ai.jmeter.agent.config;
 
+import com.ai.jmeter.agent.adapter.ai.BudgetedCostGovernor;
+import com.ai.jmeter.agent.adapter.ai.ModelRouter;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
@@ -9,12 +11,15 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
+import com.ai.jmeter.agent.adapter.memory.JsonlHealMemoryAdapter;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
 import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
+import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
+import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
@@ -61,8 +66,23 @@ public class AgentConfiguration {
     }
 
     @Bean
-    public JmeterAgentPort jmeterAgentPort(ChatClient jmeterChatClient, PromptCatalog promptCatalog) {
-        return new SpringAiAgentAdapter(jmeterChatClient, promptCatalog);
+    public CostGovernorPort costGovernorPort(AgentProperties properties) {
+        return new BudgetedCostGovernor(properties.tokenBudget());
+    }
+
+    @Bean
+    public ModelRouter modelRouter(AgentProperties properties) {
+        return new ModelRouter(properties.modelsByTurn());
+    }
+
+    @Bean
+    public JmeterAgentPort jmeterAgentPort(
+            ChatClient jmeterChatClient,
+            PromptCatalog promptCatalog,
+            CostGovernorPort costGovernorPort,
+            ModelRouter modelRouter) {
+        return new SpringAiAgentAdapter(
+                jmeterChatClient, promptCatalog, costGovernorPort, modelRouter);
     }
 
     @Bean
@@ -114,6 +134,12 @@ public class AgentConfiguration {
     }
 
     @Bean
+    public HealMemoryPort healMemoryPort(ObjectMapper objectMapper, AgentProperties properties) {
+        return new JsonlHealMemoryAdapter(
+                objectMapper, properties.workspace().resolve("heal-memory.jsonl"));
+    }
+
+    @Bean
     public SensitiveDataRedactorPort sensitiveDataRedactorPort() {
         return new PatternSensitiveDataRedactor();
     }
@@ -126,6 +152,8 @@ public class AgentConfiguration {
             WorkspacePort workspacePort,
             SensitiveDataRedactorPort sensitiveDataRedactorPort,
             JmxDocumentPort jmxDocumentPort,
+            HealMemoryPort healMemoryPort,
+            CostGovernorPort costGovernorPort,
             AgentProperties properties) {
         return new SelfHealingOrchestrator(
                 trafficParserRegistry,
@@ -134,7 +162,10 @@ public class AgentConfiguration {
                 workspacePort,
                 sensitiveDataRedactorPort,
                 jmxDocumentPort,
+                healMemoryPort,
+                costGovernorPort,
                 properties.maxRetries(),
-                properties.strictCompliance());
+                properties.strictCompliance(),
+                properties.recalledPrecedents());
     }
 }

@@ -7,6 +7,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.ai.jmeter.agent.adapter.ai.BudgetedCostGovernor;
+import com.ai.jmeter.agent.adapter.ai.ModelRouter;
 import com.ai.jmeter.agent.adapter.ai.RepairPlanResponse;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
@@ -20,6 +22,7 @@ import com.ai.jmeter.agent.domain.SampleFailure;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
+import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.ai.jmeter.agent.support.TestFixtures;
 import java.nio.file.Path;
@@ -33,6 +36,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ResponseEntity;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 
 /**
  * Drives the loop end to end through the real AI, redaction and JMX adapters, with only the
@@ -76,6 +83,15 @@ class SelfHealingLoopModelInteractionTest {
     @Mock
     private WorkspacePort workspace;
 
+    @Mock
+    private HealMemoryPort memory;
+
+    /** Wraps a bound reply in the response envelope the adapter reads token usage from. */
+    private static <T> ResponseEntity<ChatResponse, T> chatEntity(T entity) {
+        return new ResponseEntity<>(
+                new ChatResponse(List.of(new Generation(new AssistantMessage("{}")))), entity);
+    }
+
     private SelfHealingOrchestrator orchestrator() {
         when(harParser.supportedMode()).thenReturn(ExecutionMode.API);
         when(harParser.parse(SOURCE)).thenReturn(CAPTURED_TRAFFIC);
@@ -87,27 +103,31 @@ class SelfHealingLoopModelInteractionTest {
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         when(requestSpec.call()).thenReturn(responseSpec);
 
-        when(responseSpec.entity(JmeterGenerationResult.class)).thenReturn(
+        when(responseSpec.responseEntity(JmeterGenerationResult.class)).thenReturn(chatEntity(
                 new JmeterGenerationResult(TestFixtures.VALID_JMX, "user\nalice",
-                        List.of("user"), "initial plan"));
-        when(responseSpec.entity(RepairPlanResponse.class)).thenReturn(
+                        List.of("user"), "initial plan")));
+        when(responseSpec.responseEntity(RepairPlanResponse.class)).thenReturn(chatEntity(
                 new RepairPlanResponse(
                         "The login response was never mined for the bearer token",
                         false,
                         List.of(new RepairPlanResponse.MutationCommand(
                                 "jsonPathExtractor", "login", "auth_token", "$.access_token",
                                 null, null, null, null, null, null, null, null,
-                                null, null, null, null, null))));
+                                null, null, null, null, null)))));
 
         return new SelfHealingOrchestrator(
                 new TrafficParserRegistry(List.of(harParser)),
-                new SpringAiAgentAdapter(chatClient, TestFixtures.promptCatalog()),
+                new SpringAiAgentAdapter(chatClient, TestFixtures.promptCatalog(),
+                        new BudgetedCostGovernor(0), ModelRouter.usingDefaults()),
                 executionEngine,
                 workspace,
                 new PatternSensitiveDataRedactor(),
                 new DomJmxDocumentAdapter(),
+                memory,
+                new BudgetedCostGovernor(0),
                 3,
-                false);
+                false,
+                3);
     }
 
     @Test

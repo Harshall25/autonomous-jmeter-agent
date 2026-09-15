@@ -3,6 +3,7 @@ package com.ai.jmeter.agent.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import java.nio.file.Path;
 import java.util.List;
@@ -131,7 +132,8 @@ class DomainValueObjectsTest {
                     new WorkspaceArtifacts(Path.of("auto_test.jmx"), Path.of("test_data.csv")),
                     ExecutionReport.success(1, ""),
                     attempts,
-                    RedactionResult.clean("[]"));
+                    RedactionResult.clean("[]"),
+                    RunCost.empty(0));
         }
 
         @Test

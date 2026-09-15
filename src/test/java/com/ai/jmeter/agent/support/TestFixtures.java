@@ -4,6 +4,7 @@ import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.config.AgentProperties;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.core.io.ClassPathResource;
 
 /** Shared fixtures so a signature change lands in one place rather than across every test. */
@@ -67,6 +68,6 @@ public final class TestFixtures {
     public static AgentProperties properties(Path homePath, Path libPath) {
         return new AgentProperties(
                 homePath, 3, Path.of("workspace"), Duration.ofMinutes(10), libPath,
-                150, 2000, 200, 8000, 500, false);
+                150, 2000, 200, 8000, 500, false, 3, 0L, Map.of());
     }
 }

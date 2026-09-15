@@ -13,6 +13,7 @@ import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import java.nio.file.Path;
@@ -46,7 +47,8 @@ class AgentCommandLineRunnerTest {
                         Path.of("workspace/test_data.csv")),
                 ExecutionReport.success(4, ""),
                 2,
-                RedactionResult.clean("[]")));
+                RedactionResult.clean("[]"),
+                RunCost.empty(0)));
     }
 
     @Test
