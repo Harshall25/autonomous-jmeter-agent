@@ -1,5 +1,10 @@
 target/
 
+# Real configuration and credentials. .env.example is the template that is tracked.
+.env
+.env.*
+!.env.example
+
 # Runtime output of an agent run: generated plans, test data and JMeter results.
 workspace/
 *.jtl

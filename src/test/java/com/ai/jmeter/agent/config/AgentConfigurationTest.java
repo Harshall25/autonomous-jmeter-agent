@@ -6,7 +6,6 @@ import static org.mockito.Mockito.when;
 
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
-import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
 import com.ai.jmeter.agent.adapter.api.LocalOperatorPrincipalResolver;
 import com.ai.jmeter.agent.adapter.api.TrustedHeaderPrincipalResolver;
 import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
@@ -37,7 +36,6 @@ import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
-import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.ai.jmeter.agent.support.TestFixtures;
@@ -187,14 +185,6 @@ class AgentConfigurationTest {
     void bindsRunLedgerPort() {
         assertThat(configuration.runLedgerPort(new ObjectMapper(), properties(), tenancy()))
                 .isInstanceOf(JsonlRunLedger.class);
-    }
-
-    @Test
-    @DisplayName("serves the control plane over the ledger it bound")
-    void bindsControlPlaneController() {
-        assertThat(configuration.controlPlaneController(
-                mock(RunLedgerPort.class), configuration.principalResolver(tenancy())))
-                .isInstanceOf(ControlPlaneController.class);
     }
 
     @Test

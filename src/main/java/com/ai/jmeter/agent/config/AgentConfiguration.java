@@ -5,7 +5,6 @@ import com.ai.jmeter.agent.adapter.ai.ModelRouter;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiRootCauseAnalyzer;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
-import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
 import com.ai.jmeter.agent.adapter.api.LocalOperatorPrincipalResolver;
 import com.ai.jmeter.agent.adapter.api.PrincipalResolver;
 import com.ai.jmeter.agent.adapter.api.TrustedHeaderPrincipalResolver;
@@ -70,7 +69,6 @@ import java.util.Set;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ExitCodeExceptionMapper;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -333,21 +331,6 @@ public class AgentConfiguration {
     }
 
     /**
-     * Serves the run ledger only when the application was started as a web application.
-     *
-     * <p>A CLI run started from a pipeline has no business opening a port, and an agent that
-     * silently binds one in every CI container would be an unwelcome surprise. The control plane
-     * is something an operator asks for with
-     * {@code --spring.main.web-application-type=servlet}.
-     */
-    @Bean
-    @ConditionalOnWebApplication
-    public ControlPlaneController controlPlaneController(
-            RunLedgerPort runLedgerPort, PrincipalResolver principalResolver) {
-        return new ControlPlaneController(runLedgerPort, principalResolver);
-    }
-
-    /**
      * Decides who the control plane believes its callers are.
      *
      * <p>With tenancy off there is one operator on one machine, and demanding an identity header
@@ -356,7 +339,6 @@ public class AgentConfiguration {
      * operator stating they have such a proxy.
      */
     @Bean
-    @ConditionalOnWebApplication
     public PrincipalResolver principalResolver(TenancyProperties tenancy) {
         if (!tenancy.enabled()) {
             return new LocalOperatorPrincipalResolver();

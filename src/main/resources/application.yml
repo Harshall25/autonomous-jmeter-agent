@@ -12,9 +12,17 @@ spring:
       api-key: ${ANTHROPIC_API_KEY:PLACEHOLDER_KEY}
       chat:
         options:
-          model: ${ANTHROPIC_MODEL:claude-3-5-sonnet-20240620}
+          # KNOWN LIMITATION — read before changing this.
+          # Spring AI 1.0.0 always puts `temperature` on the wire (its auto-configuration
+          # hard-codes 0.8 and the request DTO only omits nulls). Claude 5 models reject
+          # `temperature` with HTTP 400, so claude-opus-5 and claude-sonnet-5 cannot be
+          # selected until Spring AI is upgraded to a release that omits sampling
+          # parameters. claude-haiku-4-5 still accepts them, so it is the default.
+          # See docs/DEPLOYMENT.md § Known limitations for the upgrade path.
+          model: ${ANTHROPIC_MODEL:claude-haiku-4-5}
           # Plans run to thousands of lines of XML, and a truncated plan is an unusable one.
-          max-tokens: 8192
+          # Kept under the SDK's non-streaming HTTP timeout.
+          max-tokens: ${ANTHROPIC_MAX_TOKENS:16000}
           # Near-deterministic: the agent needs a reproducible plan, not a creative one.
           temperature: 0.2
 

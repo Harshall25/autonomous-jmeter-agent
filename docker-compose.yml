@@ -1,0 +1,47 @@
+# Two ways to run the agent. Both read .env (copy .env.example first).
+#
+#   One-off run:   docker compose run --rm agent --mode=API --source=/captures/checkout.har
+#   Control plane: docker compose up -d control-plane   then open http://localhost:8080
+#
+# `agent` is a one-off job, not a service — it runs, produces a plan, and exits.
+# `control-plane` is the long-lived reader over the same workspace volume.
+
+services:
+
+  agent:
+    build: .
+    env_file: [.env]
+    # Never restart: a finished run is finished, and re-running it would spend
+    # tokens and re-issue load against the system under test.
+    restart: "no"
+    volumes:
+      - workspace:/var/lib/jmeter-agent/workspace
+      # Your captures, read-only — the agent never needs to write to them.
+      - ./captures:/captures:ro
+    # Arguments come from the command line:
+    #   docker compose run --rm agent --mode=API --source=/captures/checkout.har
+    command: []
+
+  control-plane:
+    build: .
+    env_file: [.env]
+    restart: unless-stopped
+    ports:
+      # Bound to loopback on purpose. The control plane trusts identity headers,
+      # which is only safe behind a gateway that strips and sets them — exposing
+      # this straight to a network would let any caller name their own tenant.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - workspace:/var/lib/jmeter-agent/workspace
+    command:
+      - "--spring.main.web-application-type=servlet"
+      - "--server.port=8080"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -fsS http://localhost:8080/api/runs > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  workspace:

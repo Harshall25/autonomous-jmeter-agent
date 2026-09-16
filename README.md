@@ -8,20 +8,35 @@ JMeter run reported a 100% sampler success rate.** Every failing run becomes evi
 turn, and the retry budget is bounded, so a plan the model cannot fix surfaces as a failure rather
 than an infinite spend loop.
 
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| **[docs/USAGE.md](docs/USAGE.md)** | First run, the five ingestion modes, load shaping, reading heal diffs, gating a PR, troubleshooting |
+| **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** | What is verified vs. not, where to deploy, Docker/Kubernetes/systemd, security, operations |
+| **[.env.example](.env.example)** | Every environment variable, what it does, and which two are required |
+
 ## Quick start
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export JMETER_HOME=/opt/jmeter/bin
+cp .env.example .env && $EDITOR .env    # set ANTHROPIC_API_KEY and JMETER_HOME
 
-mvn -B package
+mvn -B clean verify                      # tests + 100% coverage gate
+set -a; . ./.env; set +a                 # java -jar does NOT read .env by itself
+
 java -jar target/autonomous-jmeter-agent-1.0.0-SNAPSHOT.jar \
   --mode=API \
   --source=captures/checkout.har \
   --workload=telemetry/access.log
 ```
 
+Or with Docker: `docker compose run --rm agent --mode=API --source=/captures/checkout.har`
+
 The plan lands in `workspace/auto_test.jmx` and its test data in `workspace/test_data.csv`.
+
+> **Model note:** the default is `claude-haiku-4-5`. Claude Opus 5 and Sonnet 5 cannot be
+> selected yet — Spring AI 1.0.0 always sends `temperature`, which those models reject with a
+> 400. See [DEPLOYMENT.md § Known limitations](docs/DEPLOYMENT.md#known-limitations).
 
 | Argument | Meaning |
 | --- | --- |

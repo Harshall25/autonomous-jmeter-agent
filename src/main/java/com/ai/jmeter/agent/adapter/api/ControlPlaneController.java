@@ -6,6 +6,7 @@ import com.ai.jmeter.agent.domain.governance.Principal;
 import com.ai.jmeter.agent.port.RunLedgerPort;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -13,7 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Driving adapter: the control plane's read API over the run ledger.
@@ -32,14 +33,16 @@ import org.springframework.web.bind.annotation.ResponseBody;
  * and the workspace live; an endpoint that could start a load test would be a denial-of-service
  * primitive wearing a REST interface.
  *
- * <p>Annotated {@code @RequestMapping} and {@code @ResponseBody} rather than
- * {@code @RestController}, which is meta-annotated {@code @Component}: component scanning would
- * construct it behind the composition root's back, and then there would be two answers to the
- * question of how this controller gets its collaborators. Spring MVC still finds it, because a
- * handler is detected by the mapping annotation on the bean's type, not by how it was registered.
+ * <p>The one bean Spring constructs by scanning rather than from the composition root. Spring
+ * Framework 6.2 detects an MVC handler by {@code @Controller} on the bean's type, so a
+ * hand-registered bean carrying only {@code @RequestMapping} is built, injected and then never
+ * routed to — every endpoint answers 404 while the context looks perfectly healthy. Its
+ * collaborators are still the ports the root bound; the condition keeps it out of a CLI run,
+ * where nothing should open a port.
  */
+@RestController
 @RequestMapping("/api/runs")
-@ResponseBody
+@ConditionalOnWebApplication
 public class ControlPlaneController {
 
     /** Keeps a careless {@code ?limit=} from trying to read an entire ledger into memory. */
