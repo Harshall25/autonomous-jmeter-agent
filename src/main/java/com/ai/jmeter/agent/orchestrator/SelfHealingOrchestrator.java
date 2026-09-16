@@ -26,6 +26,7 @@ import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.ResultStorePort;
+import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
@@ -73,6 +74,7 @@ public final class SelfHealingOrchestrator {
     private final WorkloadProfilerPort workloadProfiler;
     private final ResultStorePort resultStore;
     private final RegressionAnalyzer regressionAnalyzer;
+    private final RootCauseAnalyzerPort rootCauseAnalyzer;
     private final OrchestratorSettings settings;
     private int workloadConcurrency = 1;
 
@@ -91,6 +93,7 @@ public final class SelfHealingOrchestrator {
             WorkloadProfilerPort workloadProfiler,
             ResultStorePort resultStore,
             RegressionAnalyzer regressionAnalyzer,
+            RootCauseAnalyzerPort rootCauseAnalyzer,
             OrchestratorSettings settings) {
         this.parserRegistry = parserRegistry;
         this.agent = agent;
@@ -103,6 +106,7 @@ public final class SelfHealingOrchestrator {
         this.workloadProfiler = workloadProfiler;
         this.resultStore = resultStore;
         this.regressionAnalyzer = regressionAnalyzer;
+        this.rootCauseAnalyzer = rootCauseAnalyzer;
         this.settings = settings;
     }
 
@@ -264,6 +268,13 @@ public final class SelfHealingOrchestrator {
 
             RunAnalysis analysis = new RunAnalysis(
                     summary, regressionAnalyzer.analyze(summary, history));
+
+            // Diagnosis is only worth its tokens when something actually got slower. Explaining
+            // a healthy run produces plausible prose about normal variance.
+            if (analysis.hasRegressions()) {
+                analysis = analysis.withHypotheses(rootCauseAnalyzer.explain(analysis));
+            }
+
             log.info("Result analysis:\n{}", analysis.describe());
             return analysis;
         } catch (RuntimeException e) {

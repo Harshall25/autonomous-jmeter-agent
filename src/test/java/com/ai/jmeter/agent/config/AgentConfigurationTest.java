@@ -12,6 +12,8 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
+import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
+import com.ai.jmeter.agent.adapter.virtualization.WireMockVirtualizationAdapter;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
 import com.ai.jmeter.agent.domain.ExecutionMode;
@@ -50,7 +52,8 @@ class AgentConfigurationTest {
                 new ClassPathResource("prompts/sql-jmeter-system.st"),
                 new ClassPathResource("prompts/streaming-jmeter-system.st"),
                 new ClassPathResource("prompts/heal-script.st"),
-                new ClassPathResource("prompts/repair-plan.st"));
+                new ClassPathResource("prompts/repair-plan.st"),
+                new ClassPathResource("prompts/root-cause.st"));
     }
 
     @Test
@@ -125,6 +128,34 @@ class AgentConfigurationTest {
     }
 
     @Test
+    @DisplayName("binds the execution port to the Kubernetes adapter when distributed")
+    void bindsDistributedExecutionPort() {
+        // The loop is unchanged either way: it only ever asks the port to run a plan and report
+        // a verdict, so swapping engines is an adapter change rather than a rewrite.
+        AgentProperties distributed = new AgentProperties(
+                java.nio.file.Path.of("/opt/jmeter/bin"), 3,
+                java.nio.file.Path.of("workspace"), java.time.Duration.ofMinutes(10), null,
+                150, 2000, 200, 8000, 500, false, 3, 50, 30, 10, 5, 3.0, 1.10, false,
+                true, "kubectl", "perf", "jmeter:5.6", 4,
+                java.nio.file.Path.of("workspace/shards"), "wiremock:3", 8089, 0L,
+                java.util.Map.of());
+
+        ExecutionEnginePort port = configuration.executionEnginePort(
+                configuration.processRunner(),
+                configuration.jtlResultParser(distributed),
+                distributed);
+
+        assertThat(port).isInstanceOf(KubernetesJmeterAdapter.class);
+    }
+
+    @Test
+    @DisplayName("binds the virtualization port to the WireMock adapter")
+    void bindsVirtualizationPort() {
+        assertThat(configuration.serviceVirtualizationPort(new ObjectMapper(), properties()))
+                .isInstanceOf(WireMockVirtualizationAdapter.class);
+    }
+
+    @Test
     @DisplayName("binds the workspace port to the filesystem adapter")
     void bindsWorkspacePort() {
         WorkspacePort port = configuration.workspacePort(properties());
@@ -148,6 +179,9 @@ class AgentConfigurationTest {
                 configuration.workloadProfilerPort(properties()),
                 configuration.resultStorePort(new ObjectMapper(), properties()),
                 configuration.regressionAnalyzer(properties()),
+                configuration.rootCauseAnalyzerPort(
+                        mock(ChatClient.class), promptCatalog(),
+                        configuration.costGovernorPort(properties())),
                 properties());
 
         assertThat(orchestrator).isNotNull();

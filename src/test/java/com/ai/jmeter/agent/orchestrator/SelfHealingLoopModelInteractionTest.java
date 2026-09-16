@@ -134,6 +134,7 @@ class SelfHealingLoopModelInteractionTest {
                 new AccessLogWorkloadProfiler(30),
                 resultStore,
                 new RegressionAnalyzer(5, 3.0, 1.10),
+                analysis -> List.of(),
                 OrchestratorSettings.defaults());
     }
 

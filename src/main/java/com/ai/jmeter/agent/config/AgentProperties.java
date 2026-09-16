@@ -37,6 +37,14 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param regressionMinimumChangeRatio floor on relative change, so a statistically
  *                                   significant but trivial move does not fail a build
  * @param traceCorrelation           emit a W3C traceparent on every request
+ * @param distributed                run across a Kubernetes fleet instead of locally
+ * @param kubectlPath                the CLI used to drive the cluster
+ * @param kubernetesNamespace        where the LoadTest resource is created
+ * @param jmeterImage                the runner image the worker pods run
+ * @param workers                    how many load-generating pods to fan out to
+ * @param distributedResultsPath     shared volume the workers write their shards to
+ * @param stubImage                  image used to serve dependency stubs
+ * @param stubPort                   port the stub server listens on
  * @param tokenBudget                hard ceiling on tokens per run; zero means unlimited
  * @param models                     optional per-turn model overrides; unset turns use the
  *                                   client's configured default
@@ -62,8 +70,21 @@ public record AgentProperties(
         @DefaultValue("3.0") double regressionDeviationThreshold,
         @DefaultValue("1.10") double regressionMinimumChangeRatio,
         @DefaultValue("false") boolean traceCorrelation,
+        @DefaultValue("false") boolean distributed,
+        @DefaultValue("kubectl") String kubectlPath,
+        @DefaultValue("default") String kubernetesNamespace,
+        @DefaultValue("justb4/jmeter:5.6") String jmeterImage,
+        @DefaultValue("4") int workers,
+        @DefaultValue("workspace/shards") Path distributedResultsPath,
+        @DefaultValue("wiremock/wiremock:3.9.1") String stubImage,
+        @DefaultValue("8089") int stubPort,
         @DefaultValue("0") long tokenBudget,
         Map<AgentTurn, String> models) {
+
+    /** @return per-turn model routing, empty when the operator has not opted into it. */
+    public Map<AgentTurn, String> modelsByTurn() {
+        return models == null ? Map.of() : Map.copyOf(models);
+    }
 
     /**
      * Resolves where JDBC drivers are expected to live.
@@ -74,11 +95,6 @@ public record AgentProperties(
      *
      * @return the directory to scan for driver JARs
      */
-    /** @return per-turn model routing, empty when the operator has not opted into it. */
-    public Map<AgentTurn, String> modelsByTurn() {
-        return models == null ? Map.of() : Map.copyOf(models);
-    }
-
     public Path resolvedLibPath() {
         if (libPath != null) {
             return libPath;

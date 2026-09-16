@@ -59,7 +59,8 @@ public final class TestFixtures {
                 new ClassPathResource("prompts/sql-jmeter-system.st"),
                 new ClassPathResource("prompts/streaming-jmeter-system.st"),
                 new ClassPathResource("prompts/heal-script.st"),
-                new ClassPathResource("prompts/repair-plan.st"));
+                new ClassPathResource("prompts/repair-plan.st"),
+                new ClassPathResource("prompts/root-cause.st"));
     }
 
     public static AgentProperties properties() {
@@ -70,6 +71,8 @@ public final class TestFixtures {
         return new AgentProperties(
                 homePath, 3, Path.of("workspace"), Duration.ofMinutes(10), libPath,
                 150, 2000, 200, 8000, 500, false, 3, 50, 30,
-                10, 5, 3.0, 1.10, false, 0L, Map.of());
+                10, 5, 3.0, 1.10, false,
+                false, "kubectl", "default", "jmeter:5.6", 4,
+                Path.of("workspace/shards"), "wiremock:3", 8089, 0L, Map.of());
     }
 }

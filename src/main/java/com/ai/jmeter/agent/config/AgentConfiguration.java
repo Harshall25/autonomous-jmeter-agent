@@ -3,6 +3,7 @@ package com.ai.jmeter.agent.config;
 import com.ai.jmeter.agent.adapter.ai.BudgetedCostGovernor;
 import com.ai.jmeter.agent.adapter.ai.ModelRouter;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
+import com.ai.jmeter.agent.adapter.ai.SpringAiRootCauseAnalyzer;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
@@ -11,6 +12,8 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
+import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
+import com.ai.jmeter.agent.adapter.k8s.KubernetesSettings;
 import com.ai.jmeter.agent.adapter.memory.JsonlHealMemoryAdapter;
 import com.ai.jmeter.agent.adapter.results.JsonlResultStore;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
@@ -19,6 +22,7 @@ import com.ai.jmeter.agent.adapter.parser.PostmanCollectionParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.StreamingManifestParserAdapter;
 import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
+import com.ai.jmeter.agent.adapter.virtualization.WireMockVirtualizationAdapter;
 import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.orchestrator.OrchestratorSettings;
@@ -30,7 +34,9 @@ import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.ResultStorePort;
+import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
+import com.ai.jmeter.agent.port.ServiceVirtualizationPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
@@ -66,9 +72,10 @@ public class AgentConfiguration {
             @Value("classpath:/prompts/sql-jmeter-system.st") Resource sqlPrompt,
             @Value("classpath:/prompts/streaming-jmeter-system.st") Resource streamingPrompt,
             @Value("classpath:/prompts/heal-script.st") Resource healPrompt,
-            @Value("classpath:/prompts/repair-plan.st") Resource repairPrompt) {
-        return new PromptCatalog(
-                apiPrompt, sqlPrompt, streamingPrompt, healPrompt, repairPrompt);
+            @Value("classpath:/prompts/repair-plan.st") Resource repairPrompt,
+            @Value("classpath:/prompts/root-cause.st") Resource rootCausePrompt) {
+        return new PromptCatalog(apiPrompt, sqlPrompt, streamingPrompt,
+                healPrompt, repairPrompt, rootCausePrompt);
     }
 
     @Bean
@@ -141,9 +148,29 @@ public class AgentConfiguration {
         return new JtlResultParser(properties.maxRecordedFailures());
     }
 
+    /**
+     * Binds the execution port to whichever engine the operator configured.
+     *
+     * <p>The two engines are interchangeable precisely because the agentic loop only ever asks
+     * the port to run a plan and report a verdict; neither it nor the domain knows whether that
+     * happened in one local JVM or across a fleet.
+     */
     @Bean
     public ExecutionEnginePort executionEnginePort(
             ProcessRunner processRunner, JtlResultParser jtlResultParser, AgentProperties properties) {
+        if (properties.distributed()) {
+            return new KubernetesJmeterAdapter(
+                    processRunner,
+                    jtlResultParser,
+                    new KubernetesSettings(
+                            properties.kubectlPath(),
+                            properties.kubernetesNamespace(),
+                            properties.jmeterImage(),
+                            properties.workers(),
+                            properties.distributedResultsPath(),
+                            properties.executionTimeout()),
+                    properties.workspace());
+        }
         return new ProcessBuilderJmeterAdapter(
                 processRunner,
                 jtlResultParser,
@@ -170,6 +197,14 @@ public class AgentConfiguration {
     }
 
     @Bean
+    public RootCauseAnalyzerPort rootCauseAnalyzerPort(
+            ChatClient jmeterChatClient,
+            PromptCatalog promptCatalog,
+            CostGovernorPort costGovernorPort) {
+        return new SpringAiRootCauseAnalyzer(jmeterChatClient, promptCatalog, costGovernorPort);
+    }
+
+    @Bean
     public ResultStorePort resultStorePort(ObjectMapper objectMapper, AgentProperties properties) {
         return new JsonlResultStore(
                 objectMapper, properties.workspace().resolve("run-history.jsonl"));
@@ -181,6 +216,14 @@ public class AgentConfiguration {
                 properties.minimumBaselineRuns(),
                 properties.regressionDeviationThreshold(),
                 properties.regressionMinimumChangeRatio());
+    }
+
+    @Bean
+    public ServiceVirtualizationPort serviceVirtualizationPort(
+            ObjectMapper objectMapper, AgentProperties properties) {
+        return new WireMockVirtualizationAdapter(
+                objectMapper, properties.workspace(),
+                properties.stubImage(), properties.stubPort());
     }
 
     @Bean
@@ -206,6 +249,7 @@ public class AgentConfiguration {
             WorkloadProfilerPort workloadProfilerPort,
             ResultStorePort resultStorePort,
             RegressionAnalyzer regressionAnalyzer,
+            RootCauseAnalyzerPort rootCauseAnalyzerPort,
             AgentProperties properties) {
         return new SelfHealingOrchestrator(
                 trafficParserRegistry,
@@ -219,6 +263,7 @@ public class AgentConfiguration {
                 workloadProfilerPort,
                 resultStorePort,
                 regressionAnalyzer,
+                rootCauseAnalyzerPort,
                 new OrchestratorSettings(
                         properties.maxRetries(),
                         properties.strictCompliance(),

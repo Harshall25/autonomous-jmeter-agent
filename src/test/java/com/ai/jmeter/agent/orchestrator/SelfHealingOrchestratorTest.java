@@ -25,6 +25,7 @@ import com.ai.jmeter.agent.domain.SampleFailure;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
+import com.ai.jmeter.agent.domain.analysis.RootCauseHypothesis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.results.RunSummary;
 import com.ai.jmeter.agent.domain.results.SampleStatistics;
@@ -48,6 +49,7 @@ import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.ResultStoreException;
 import com.ai.jmeter.agent.port.ResultStorePort;
+import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.nio.file.Path;
@@ -128,6 +130,9 @@ class SelfHealingOrchestratorTest {
     @Mock
     private ResultStorePort resultStore;
 
+    @Mock
+    private RootCauseAnalyzerPort rootCauseAnalyzer;
+
     @BeforeEach
     void setUp() {
         when(harParser.supportedMode()).thenReturn(ExecutionMode.API);
@@ -145,6 +150,7 @@ class SelfHealingOrchestratorTest {
         when(costGovernor.currentCost()).thenReturn(RunCost.empty(0));
         when(workloadProfiler.profile(any())).thenReturn(WorkloadModel.smokeTest());
         when(resultStore.history(anyString(), anyInt())).thenReturn(List.of());
+        when(rootCauseAnalyzer.explain(any())).thenReturn(List.of());
     }
 
     private SelfHealingOrchestrator orchestrator(int maxAttempts, boolean strictCompliance) {
@@ -157,6 +163,7 @@ class SelfHealingOrchestratorTest {
                 new TrafficParserRegistry(List.of(harParser)),
                 agent, executionEngine, workspace, redactor, jmxDocument, memory, costGovernor,
                 workloadProfiler, resultStore, new RegressionAnalyzer(5, 3.0, 1.10),
+                rootCauseAnalyzer,
                 new OrchestratorSettings(maxAttempts, strictCompliance, 3, 10, traceCorrelation));
     }
 
@@ -530,7 +537,8 @@ class SelfHealingOrchestratorTest {
                     new TrafficParserRegistry(List.of(parser)),
                     agent, executionEngine, workspace, redactor, jmxDocument, memory,
                     costGovernor, workloadProfiler, resultStore,
-                    new RegressionAnalyzer(5, 3.0, 1.10), OrchestratorSettings.defaults())
+                    new RegressionAnalyzer(5, 3.0, 1.10), rootCauseAnalyzer,
+                    OrchestratorSettings.defaults())
                     .run(AgentRunRequest.of(ExecutionMode.SQL, SOURCE));
         }
 
@@ -734,6 +742,39 @@ class SelfHealingOrchestratorTest {
             when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
 
             assertThat(run(3).analysis().summary().throughputPerSecond()).isZero();
+        }
+
+        @Test
+        @DisplayName("diagnoses a run only when something actually got slower")
+        void diagnosesOnlyRegressions() {
+            // Explaining a healthy run produces plausible prose about normal variance and costs
+            // tokens to do it.
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+            when(resultStore.history(anyString(), anyInt())).thenReturn(
+                    java.util.stream.IntStream.range(0, 8)
+                            .mapToObj(index -> new RunSummary(
+                                    "past-" + index, "fp", java.time.Instant.EPOCH,
+                                    Map.of("login", new SampleStatistics(
+                                            "login", 100, 0, 10, 10, 10, 10, 10)),
+                                    10, 50))
+                            .toList());
+            when(rootCauseAnalyzer.explain(any())).thenReturn(List.of(
+                    new RootCauseHypothesis("pool exhaustion", "p99 diverged", "check", 70)));
+
+            AgentRunOutcome outcome = run(3);
+
+            verify(rootCauseAnalyzer).explain(any());
+            assertThat(outcome.analysis().hypotheses()).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("skips diagnosis for a run that is consistent with its history")
+        void skipsDiagnosisWhenHealthy() {
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+
+            run(3);
+
+            verify(rootCauseAnalyzer, never()).explain(any());
         }
 
         @Test

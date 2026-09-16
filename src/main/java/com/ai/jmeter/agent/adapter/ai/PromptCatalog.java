@@ -37,19 +37,22 @@ public final class PromptCatalog {
     private final Map<PromptProfile, PromptTemplate> systemPrompts;
     private final PromptTemplate healPrompt;
     private final PromptTemplate repairPlanPrompt;
+    private final PromptTemplate rootCausePrompt;
 
     public PromptCatalog(
             Resource httpSystemPrompt,
             Resource jdbcSystemPrompt,
             Resource streamingSystemPrompt,
             Resource healPrompt,
-            Resource repairPlanPrompt) {
+            Resource repairPlanPrompt,
+            Resource rootCausePrompt) {
         this.systemPrompts = new EnumMap<>(PromptProfile.class);
         this.systemPrompts.put(PromptProfile.HTTP, new PromptTemplate(httpSystemPrompt));
         this.systemPrompts.put(PromptProfile.JDBC, new PromptTemplate(jdbcSystemPrompt));
         this.systemPrompts.put(PromptProfile.STREAMING, new PromptTemplate(streamingSystemPrompt));
         this.healPrompt = new PromptTemplate(healPrompt);
         this.repairPlanPrompt = new PromptTemplate(repairPlanPrompt);
+        this.rootCausePrompt = new PromptTemplate(rootCausePrompt);
     }
 
     /**
@@ -115,5 +118,15 @@ public final class PromptCatalog {
     /** @return the user turn accompanying the repair-proposal brief. */
     public String repairInstruction() {
         return REPAIR_INSTRUCTION;
+    }
+
+    /**
+     * Renders the diagnosis brief.
+     *
+     * @param runAnalysis what the run measured and how it compared to history
+     * @return the system instructions for the root-cause turn
+     */
+    public String rootCauseSystemPrompt(String runAnalysis) {
+        return rootCausePrompt.render(Map.of("run_analysis", runAnalysis));
     }
 }

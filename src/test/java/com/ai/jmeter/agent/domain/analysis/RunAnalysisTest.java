@@ -62,4 +62,26 @@ class RunAnalysisTest {
                 .contains("Run run-1")
                 .contains("1 performance regression(s) detected");
     }
+
+    @Test
+    @DisplayName("carries diagnosis alongside the comparison once it has been made")
+    void attachesHypotheses() {
+        RunAnalysis diagnosed = new RunAnalysis(summary(), List.of(verdict("login", true)))
+                .withHypotheses(List.of(new RootCauseHypothesis(
+                        "Connection pool exhaustion", "p99 diverged from p50", "check pool", 80)));
+
+        assertThat(diagnosed.hypotheses()).hasSize(1);
+        assertThat(diagnosed.verdicts()).hasSize(1);
+        assertThat(diagnosed.describe())
+                .contains("Root-cause hypotheses:")
+                .contains("Connection pool exhaustion")
+                .contains("[80% confidence]");
+    }
+
+    @Test
+    @DisplayName("omits the diagnosis section when nothing was diagnosed")
+    void omitsEmptyDiagnosis() {
+        assertThat(new RunAnalysis(summary(), List.of(verdict("login", false))).describe())
+                .doesNotContain("Root-cause hypotheses");
+    }
 }
