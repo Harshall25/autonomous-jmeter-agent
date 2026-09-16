@@ -7,6 +7,8 @@ import static org.mockito.Mockito.when;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
+import com.ai.jmeter.agent.adapter.api.LocalOperatorPrincipalResolver;
+import com.ai.jmeter.agent.adapter.api.TrustedHeaderPrincipalResolver;
 import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.EvaluationCommandLineRunner;
@@ -16,6 +18,9 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.eval.YamlEvaluationCorpus;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
+import com.ai.jmeter.agent.adapter.governance.HmacManifestSigner;
+import com.ai.jmeter.agent.adapter.governance.JsonlProvenanceStore;
+import com.ai.jmeter.agent.adapter.governance.UnconfiguredManifestSigner;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
 import com.ai.jmeter.agent.adapter.ledger.JsonlRunLedger;
 import com.ai.jmeter.agent.adapter.virtualization.WireMockVirtualizationAdapter;
@@ -23,6 +28,8 @@ import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
 import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.ci.GatePolicy;
+import com.ai.jmeter.agent.domain.cost.AgentTurn;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import com.ai.jmeter.agent.domain.ci.GateVerdict;
 import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
 import com.ai.jmeter.agent.orchestrator.EvaluationHarness;
@@ -55,6 +62,15 @@ class AgentConfigurationTest {
 
     private static AgentProperties properties() {
         return TestFixtures.properties();
+    }
+
+    private static TenancyProperties tenancy() {
+        return TestFixtures.tenancyProperties();
+    }
+
+    private static TenancyProperties tenancy(boolean enabled, String signingKey) {
+        return new TenancyProperties(enabled, "acme", signingKey, "prompts@v3",
+                "X-Auth-Subject", "X-Auth-Tenant", "X-Auth-Roles");
     }
 
     private PromptCatalog promptCatalog() {
@@ -169,14 +185,15 @@ class AgentConfigurationTest {
     @Test
     @DisplayName("binds the run ledger the control plane reads from")
     void bindsRunLedgerPort() {
-        assertThat(configuration.runLedgerPort(new ObjectMapper(), properties()))
+        assertThat(configuration.runLedgerPort(new ObjectMapper(), properties(), tenancy()))
                 .isInstanceOf(JsonlRunLedger.class);
     }
 
     @Test
     @DisplayName("serves the control plane over the ledger it bound")
     void bindsControlPlaneController() {
-        assertThat(configuration.controlPlaneController(mock(RunLedgerPort.class)))
+        assertThat(configuration.controlPlaneController(
+                mock(RunLedgerPort.class), configuration.principalResolver(tenancy())))
                 .isInstanceOf(ControlPlaneController.class);
     }
 
@@ -218,9 +235,98 @@ class AgentConfigurationTest {
     }
 
     @Test
+    @DisplayName("records which model answered each turn, for the provenance manifest")
+    void recordsPerTurnModelRouting() {
+        AgentProperties routed = TestFixtures.properties(
+                java.nio.file.Path.of("/opt/jmeter/bin"), null,
+                java.util.Map.of(AgentTurn.REPAIR, "claude-3-opus"));
+
+        assertThat(configuration.selfHealingOrchestrator(
+                configuration.trafficParserRegistry(
+                        List.of(configuration.sqlLogParserAdapter(routed))),
+                mock(JmeterAgentPort.class),
+                mock(ExecutionEnginePort.class),
+                mock(WorkspacePort.class),
+                configuration.sensitiveDataRedactorPort(),
+                configuration.jmxDocumentPort(),
+                configuration.healMemoryPort(new ObjectMapper(), routed, tenancy()),
+                configuration.costGovernorPort(routed),
+                configuration.workloadProfilerPort(routed),
+                configuration.resultStorePort(new ObjectMapper(), routed, tenancy()),
+                configuration.runLedgerPort(new ObjectMapper(), routed, tenancy()),
+                configuration.provenanceStorePort(new ObjectMapper(), routed, tenancy()),
+                configuration.manifestSignerPort(tenancy()),
+                configuration.regressionAnalyzer(routed),
+                configuration.rootCauseAnalyzerPort(
+                        mock(ChatClient.class), promptCatalog(),
+                        configuration.costGovernorPort(routed)),
+                routed,
+                tenancy())).isNotNull();
+    }
+
+    @Test
+    @DisplayName("binds the provenance store the audit trail is written to")
+    void bindsProvenanceStore() {
+        assertThat(configuration.provenanceStorePort(new ObjectMapper(), properties(), tenancy()))
+                .isInstanceOf(JsonlProvenanceStore.class);
+    }
+
+    @Test
+    @DisplayName("refuses to sign anything until a key is configured")
+    void bindsTheRefusingSignerWithoutAKey() {
+        assertThat(configuration.manifestSignerPort(tenancy()))
+                .isInstanceOf(UnconfiguredManifestSigner.class);
+    }
+
+    @Test
+    @DisplayName("binds the HMAC signer once a key is configured")
+    void bindsTheHmacSignerWithAKey() {
+        assertThat(configuration.manifestSignerPort(
+                tenancy(true, "a-thirty-two-character-test-key!!")))
+                .isInstanceOf(HmacManifestSigner.class);
+    }
+
+    @Test
+    @DisplayName("trusts nobody's headers until tenancy is turned on")
+    void bindsTheLocalResolverWhenTenancyIsOff() {
+        assertThat(configuration.principalResolver(tenancy()))
+                .isInstanceOf(LocalOperatorPrincipalResolver.class);
+    }
+
+    @Test
+    @DisplayName("reads identity from the proxy's headers once tenancy is on")
+    void bindsTheHeaderResolverWhenTenancyIsOn() {
+        assertThat(configuration.principalResolver(tenancy(true, null)))
+                .isInstanceOf(TrustedHeaderPrincipalResolver.class);
+    }
+
+    @Test
+    @DisplayName("gives each tenant its own workspace, and none when tenancy is off")
+    void scopesTheWorkspaceByTenant() {
+        // Each tenant's runs execute in their own process, so isolation is a path rather than a
+        // filter: a capture written for one tenant is never where another's run can reach it.
+        assertThat(AgentConfiguration.tenantWorkspace(properties(), tenancy()))
+                .isEqualTo(java.nio.file.Path.of("workspace"));
+        assertThat(AgentConfiguration.tenantWorkspace(properties(), tenancy(true, null)))
+                .isEqualTo(java.nio.file.Path.of("workspace/acme"));
+    }
+
+    @Test
+    @DisplayName("attributes a command line run to the local operator, or to the tenant's service")
+    void attributesCommandLineRuns() {
+        assertThat(AgentConfiguration.commandLinePrincipal(tenancy()).id())
+                .isEqualTo("local-operator");
+        assertThat(AgentConfiguration.commandLinePrincipal(tenancy(true, null)))
+                .satisfies(principal -> {
+                    assertThat(principal.id()).isEqualTo("cli");
+                    assertThat(principal.tenant()).isEqualTo(new TenantId("acme"));
+                });
+    }
+
+    @Test
     @DisplayName("binds the workspace port to the filesystem adapter")
     void bindsWorkspacePort() {
-        WorkspacePort port = configuration.workspacePort(properties());
+        WorkspacePort port = configuration.workspacePort(properties(), tenancy());
 
         assertThat(port).isInstanceOf(FileSystemWorkspaceAdapter.class);
     }
@@ -236,16 +342,19 @@ class AgentConfigurationTest {
                 mock(WorkspacePort.class),
                 configuration.sensitiveDataRedactorPort(),
                 configuration.jmxDocumentPort(),
-                configuration.healMemoryPort(new ObjectMapper(), properties()),
+                configuration.healMemoryPort(new ObjectMapper(), properties(), tenancy()),
                 configuration.costGovernorPort(properties()),
                 configuration.workloadProfilerPort(properties()),
-                configuration.resultStorePort(new ObjectMapper(), properties()),
-                configuration.runLedgerPort(new ObjectMapper(), properties()),
+                configuration.resultStorePort(new ObjectMapper(), properties(), tenancy()),
+                configuration.runLedgerPort(new ObjectMapper(), properties(), tenancy()),
+                configuration.provenanceStorePort(new ObjectMapper(), properties(), tenancy()),
+                configuration.manifestSignerPort(tenancy()),
                 configuration.regressionAnalyzer(properties()),
                 configuration.rootCauseAnalyzerPort(
                         mock(ChatClient.class), promptCatalog(),
                         configuration.costGovernorPort(properties())),
-                properties());
+                properties(),
+                tenancy());
 
         assertThat(orchestrator).isNotNull();
         GateProperties gate = TestFixtures.gateProperties();
@@ -253,7 +362,8 @@ class AgentConfigurationTest {
                 orchestrator,
                 configuration.performanceGate(gate),
                 configuration.buildReporterPort(gate),
-                gate))
+                gate,
+                tenancy()))
                 .isInstanceOf(AgentCommandLineRunner.class);
     }
 }

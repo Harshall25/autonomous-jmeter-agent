@@ -28,6 +28,10 @@ import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
 import com.ai.jmeter.agent.domain.analysis.RootCauseHypothesis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.governance.Principal;
+import com.ai.jmeter.agent.domain.governance.Role;
+import com.ai.jmeter.agent.domain.governance.RunManifest;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import com.ai.jmeter.agent.domain.results.RunSummary;
 import com.ai.jmeter.agent.domain.results.SampleStatistics;
 import com.ai.jmeter.agent.domain.memory.HealPrecedent;
@@ -53,12 +57,16 @@ import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.ResultStoreException;
 import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
+import com.ai.jmeter.agent.port.ManifestSignerPort;
+import com.ai.jmeter.agent.port.ProvenanceException;
+import com.ai.jmeter.agent.port.ProvenanceStorePort;
 import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -138,6 +146,12 @@ class SelfHealingOrchestratorTest {
     private RunLedgerPort runLedger;
 
     @Mock
+    private ProvenanceStorePort provenanceStore;
+
+    @Mock
+    private ManifestSignerPort manifestSigner;
+
+    @Mock
     private RootCauseAnalyzerPort rootCauseAnalyzer;
 
     @BeforeEach
@@ -169,7 +183,8 @@ class SelfHealingOrchestratorTest {
         return new SelfHealingOrchestrator(
                 new TrafficParserRegistry(List.of(harParser)),
                 agent, executionEngine, workspace, redactor, jmxDocument, memory, costGovernor,
-                workloadProfiler, resultStore, runLedger, new RegressionAnalyzer(5, 3.0, 1.10),
+                workloadProfiler, resultStore, runLedger, provenanceStore, manifestSigner,
+                new RegressionAnalyzer(5, 3.0, 1.10),
                 rootCauseAnalyzer,
                 new OrchestratorSettings(maxAttempts, strictCompliance, 3, 10, traceCorrelation));
     }
@@ -264,6 +279,16 @@ class SelfHealingOrchestratorTest {
 
             verify(executionEngine, times(1)).execute(any());
             verify(agent, never()).proposeRepairs(anyString(), anyString(), anyList());
+        }
+
+        @Test
+        @DisplayName("treats absent provenance labels as unrecorded rather than failing")
+        void toleratesMissingProvenanceLabels() {
+            OrchestratorSettings unlabelled =
+                    new OrchestratorSettings(3, false, 3, 10, false, null, null);
+
+            assertThat(unlabelled.promptRevision()).isEmpty();
+            assertThat(unlabelled.modelsByTurn()).isEmpty();
         }
 
         @Test
@@ -544,6 +569,7 @@ class SelfHealingOrchestratorTest {
                     new TrafficParserRegistry(List.of(parser)),
                     agent, executionEngine, workspace, redactor, jmxDocument, memory,
                     costGovernor, workloadProfiler, resultStore, runLedger,
+                    provenanceStore, manifestSigner,
                     new RegressionAnalyzer(5, 3.0, 1.10), rootCauseAnalyzer,
                     OrchestratorSettings.defaults())
                     .run(AgentRunRequest.of(ExecutionMode.SQL, SOURCE));
@@ -914,6 +940,84 @@ class SelfHealingOrchestratorTest {
             assertThat(filed.getValue().journal().turnCount()).isEqualTo(1);
             assertThat(filed.getValue().rationale()).isEqualTo("Login response was never mined "
                     + "for the bearer token");
+        }
+
+        @Test
+        @DisplayName("attests the run with a signed manifest naming who asked and what ran")
+        void attestsTheRun() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+            when(manifestSigner.sign(anyString())).thenReturn("deadbeef");
+
+            AgentRunOutcome outcome = orchestrator(3, false).run(new AgentRunRequest(
+                    ExecutionMode.API, SOURCE, null,
+                    new Principal("dana", new TenantId("acme"), Set.of(Role.OPERATOR))));
+
+            ArgumentCaptor<RunManifest> filed = ArgumentCaptor.forClass(RunManifest.class);
+            verify(provenanceStore).record(filed.capture());
+            assertThat(filed.getValue().runId())
+                    .isEqualTo(outcome.analysis().summary().runId());
+            assertThat(filed.getValue().tenant()).isEqualTo(new TenantId("acme"));
+            assertThat(filed.getValue().startedBy()).isEqualTo("dana");
+            assertThat(filed.getValue().signature()).isEqualTo("deadbeef");
+        }
+
+        @Test
+        @DisplayName("signs exactly the bytes it files, so the record verifies later")
+        void signsWhatItFiles() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+            when(manifestSigner.sign(anyString())).thenReturn("deadbeef");
+
+            run(3);
+
+            ArgumentCaptor<String> signed = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<RunManifest> filed = ArgumentCaptor.forClass(RunManifest.class);
+            verify(manifestSigner).sign(signed.capture());
+            verify(provenanceStore).record(filed.capture());
+            assertThat(filed.getValue().canonicalPayload()).isEqualTo(signed.getValue());
+        }
+
+        @Test
+        @DisplayName("records the artifact digests the workspace took as it wrote them")
+        void recordsArtifactDigests() {
+            when(workspace.write(any())).thenReturn(new WorkspaceArtifacts(
+                    Path.of("workspace/auto_test.jmx"), Path.of("workspace/test_data.csv"),
+                    "sha256:plan", "sha256:data"));
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            run(3);
+
+            ArgumentCaptor<RunManifest> filed = ArgumentCaptor.forClass(RunManifest.class);
+            verify(provenanceStore).record(filed.capture());
+            assertThat(filed.getValue().artifactDigests())
+                    .containsEntry("auto_test.jmx", "sha256:plan")
+                    .containsEntry("test_data.csv", "sha256:data");
+        }
+
+        @Test
+        @DisplayName("still reports a pass when the run cannot be attested")
+        void provenanceFailureIsNotFatal() {
+            // Logged loudly rather than swallowed: an organization that turned provenance on and
+            // is silently not getting it is worse off than one that never turned it on.
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+            when(manifestSigner.sign(anyString()))
+                    .thenThrow(new ProvenanceException("no signing key configured"));
+
+            assertThat(run(3).report().successful()).isTrue();
+            verifyNoInteractions(provenanceStore);
+        }
+
+        @Test
+        @DisplayName("files a run under the tenant that asked for it")
+        void ledgerEntryCarriesTheTenant() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            orchestrator(3, false).run(new AgentRunRequest(
+                    ExecutionMode.API, SOURCE, null,
+                    new Principal("dana", new TenantId("acme"), Set.of(Role.OPERATOR))));
+
+            ArgumentCaptor<RunLedgerEntry> filed = ArgumentCaptor.forClass(RunLedgerEntry.class);
+            verify(runLedger).record(filed.capture());
+            assertThat(filed.getValue().tenant()).isEqualTo(new TenantId("acme"));
         }
 
         @Test

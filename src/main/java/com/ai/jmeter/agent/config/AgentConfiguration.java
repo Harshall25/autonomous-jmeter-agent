@@ -6,6 +6,9 @@ import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiRootCauseAnalyzer;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
+import com.ai.jmeter.agent.adapter.api.LocalOperatorPrincipalResolver;
+import com.ai.jmeter.agent.adapter.api.PrincipalResolver;
+import com.ai.jmeter.agent.adapter.api.TrustedHeaderPrincipalResolver;
 import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.EvaluationCommandLineRunner;
@@ -15,6 +18,9 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.eval.YamlEvaluationCorpus;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
+import com.ai.jmeter.agent.adapter.governance.HmacManifestSigner;
+import com.ai.jmeter.agent.adapter.governance.JsonlProvenanceStore;
+import com.ai.jmeter.agent.adapter.governance.UnconfiguredManifestSigner;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesSettings;
@@ -32,6 +38,9 @@ import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.domain.ci.PerformanceGate;
 import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
+import com.ai.jmeter.agent.domain.governance.Principal;
+import com.ai.jmeter.agent.domain.governance.Role;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import com.ai.jmeter.agent.orchestrator.EvaluationHarness;
 import com.ai.jmeter.agent.orchestrator.OrchestratorSettings;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
@@ -43,6 +52,8 @@ import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
+import com.ai.jmeter.agent.port.ManifestSignerPort;
+import com.ai.jmeter.agent.port.ProvenanceStorePort;
 import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
 import com.ai.jmeter.agent.port.RunLedgerPort;
@@ -54,6 +65,8 @@ import com.ai.jmeter.agent.port.WorkspacePort;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ExitCodeExceptionMapper;
@@ -72,7 +85,8 @@ import org.springframework.core.io.Resource;
  * constructible in a unit test with nothing but {@code new}.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties({AgentProperties.class, GateProperties.class})
+@EnableConfigurationProperties({
+        AgentProperties.class, GateProperties.class, TenancyProperties.class})
 public class AgentConfiguration {
 
     @Bean
@@ -194,9 +208,25 @@ public class AgentConfiguration {
                 properties.maxProcessOutputCharacters());
     }
 
+    /**
+     * Resolves the workspace, under the tenant's own subdirectory when tenancy is on.
+     *
+     * <p>Each tenant's runs execute in their own process, so isolation is a path rather than a
+     * filter: a capture written for one tenant is never in a directory another tenant's run can
+     * reach. {@code TenantId} validates the id as a slug, which is what makes resolving a path
+     * from it safe.
+     */
     @Bean
-    public WorkspacePort workspacePort(AgentProperties properties) {
-        return new FileSystemWorkspaceAdapter(properties.workspace(), properties.resolvedLibPath());
+    public WorkspacePort workspacePort(AgentProperties properties, TenancyProperties tenancy) {
+        return new FileSystemWorkspaceAdapter(
+                tenantWorkspace(properties, tenancy), properties.resolvedLibPath());
+    }
+
+    static java.nio.file.Path tenantWorkspace(
+            AgentProperties properties, TenancyProperties tenancy) {
+        return tenancy.enabled()
+                ? new TenantId(tenancy.tenant()).workspaceUnder(properties.workspace())
+                : properties.workspace();
     }
 
     @Bean
@@ -204,9 +234,24 @@ public class AgentConfiguration {
             SelfHealingOrchestrator orchestrator,
             PerformanceGate performanceGate,
             BuildReporterPort buildReporterPort,
-            GateProperties gateProperties) {
+            GateProperties gateProperties,
+            TenancyProperties tenancy) {
         return new AgentCommandLineRunner(
-                orchestrator, performanceGate, buildReporterPort, gateProperties.enabled());
+                orchestrator, performanceGate, buildReporterPort,
+                gateProperties.enabled(), commandLinePrincipal(tenancy));
+    }
+
+    /**
+     * Who a run started from the command line is attributed to.
+     *
+     * <p>With tenancy off this is the local operator, and the audit trail says so. With it on the
+     * run belongs to the configured tenant under a service identity, because a pipeline has no
+     * person behind it and recording one would be a fiction in the provenance record.
+     */
+    static Principal commandLinePrincipal(TenancyProperties tenancy) {
+        return tenancy.enabled()
+                ? new Principal("cli", new TenantId(tenancy.tenant()), Set.of(Role.OPERATOR))
+                : Principal.localOperator();
     }
 
     /**
@@ -259,9 +304,10 @@ public class AgentConfiguration {
     }
 
     @Bean
-    public HealMemoryPort healMemoryPort(ObjectMapper objectMapper, AgentProperties properties) {
-        return new JsonlHealMemoryAdapter(
-                objectMapper, properties.workspace().resolve("heal-memory.jsonl"));
+    public HealMemoryPort healMemoryPort(
+            ObjectMapper objectMapper, AgentProperties properties, TenancyProperties tenancy) {
+        return new JsonlHealMemoryAdapter(objectMapper,
+                tenantWorkspace(properties, tenancy).resolve("heal-memory.jsonl"));
     }
 
     @Bean
@@ -273,15 +319,17 @@ public class AgentConfiguration {
     }
 
     @Bean
-    public ResultStorePort resultStorePort(ObjectMapper objectMapper, AgentProperties properties) {
-        return new JsonlResultStore(
-                objectMapper, properties.workspace().resolve("run-history.jsonl"));
+    public ResultStorePort resultStorePort(
+            ObjectMapper objectMapper, AgentProperties properties, TenancyProperties tenancy) {
+        return new JsonlResultStore(objectMapper,
+                tenantWorkspace(properties, tenancy).resolve("run-history.jsonl"));
     }
 
     @Bean
-    public RunLedgerPort runLedgerPort(ObjectMapper objectMapper, AgentProperties properties) {
-        return new JsonlRunLedger(
-                objectMapper, properties.workspace().resolve("run-ledger.jsonl"));
+    public RunLedgerPort runLedgerPort(
+            ObjectMapper objectMapper, AgentProperties properties, TenancyProperties tenancy) {
+        return new JsonlRunLedger(objectMapper,
+                tenantWorkspace(properties, tenancy).resolve("run-ledger.jsonl"));
     }
 
     /**
@@ -294,8 +342,48 @@ public class AgentConfiguration {
      */
     @Bean
     @ConditionalOnWebApplication
-    public ControlPlaneController controlPlaneController(RunLedgerPort runLedgerPort) {
-        return new ControlPlaneController(runLedgerPort);
+    public ControlPlaneController controlPlaneController(
+            RunLedgerPort runLedgerPort, PrincipalResolver principalResolver) {
+        return new ControlPlaneController(runLedgerPort, principalResolver);
+    }
+
+    /**
+     * Decides who the control plane believes its callers are.
+     *
+     * <p>With tenancy off there is one operator on one machine, and demanding an identity header
+     * would be ceremony with no security value. With it on, identity comes from headers an
+     * authenticating proxy asserts — which is only sound because turning tenancy on is the
+     * operator stating they have such a proxy.
+     */
+    @Bean
+    @ConditionalOnWebApplication
+    public PrincipalResolver principalResolver(TenancyProperties tenancy) {
+        if (!tenancy.enabled()) {
+            return new LocalOperatorPrincipalResolver();
+        }
+        return new TrustedHeaderPrincipalResolver(
+                tenancy.userHeader(), tenancy.tenantHeader(), tenancy.rolesHeader());
+    }
+
+    @Bean
+    public ProvenanceStorePort provenanceStorePort(
+            ObjectMapper objectMapper, AgentProperties properties, TenancyProperties tenancy) {
+        return new JsonlProvenanceStore(objectMapper,
+                tenantWorkspace(properties, tenancy).resolve("provenance.jsonl"));
+    }
+
+    /**
+     * Binds the signer, or the one that refuses.
+     *
+     * <p>No third option. A signer that quietly produced an empty signature would yield a
+     * provenance chain that looks complete and proves nothing, discovered during the audit it
+     * was meant to satisfy.
+     */
+    @Bean
+    public ManifestSignerPort manifestSignerPort(TenancyProperties tenancy) {
+        return tenancy.hasSigningKey()
+                ? new HmacManifestSigner(tenancy.signingKey())
+                : new UnconfiguredManifestSigner();
     }
 
     @Bean
@@ -337,9 +425,12 @@ public class AgentConfiguration {
             WorkloadProfilerPort workloadProfilerPort,
             ResultStorePort resultStorePort,
             RunLedgerPort runLedgerPort,
+            ProvenanceStorePort provenanceStorePort,
+            ManifestSignerPort manifestSignerPort,
             RegressionAnalyzer regressionAnalyzer,
             RootCauseAnalyzerPort rootCauseAnalyzerPort,
-            AgentProperties properties) {
+            AgentProperties properties,
+            TenancyProperties tenancy) {
         return new SelfHealingOrchestrator(
                 trafficParserRegistry,
                 jmeterAgentPort,
@@ -352,6 +443,8 @@ public class AgentConfiguration {
                 workloadProfilerPort,
                 resultStorePort,
                 runLedgerPort,
+                provenanceStorePort,
+                manifestSignerPort,
                 regressionAnalyzer,
                 rootCauseAnalyzerPort,
                 new OrchestratorSettings(
@@ -359,6 +452,10 @@ public class AgentConfiguration {
                         properties.strictCompliance(),
                         properties.recalledPrecedents(),
                         properties.historyDepth(),
-                        properties.traceCorrelation()));
+                        properties.traceCorrelation(),
+                        tenancy.promptRevision(),
+                        properties.modelsByTurn().entrySet().stream().collect(
+                                java.util.stream.Collectors.toMap(
+                                        entry -> entry.getKey().name(), Map.Entry::getValue))));
     }
 }

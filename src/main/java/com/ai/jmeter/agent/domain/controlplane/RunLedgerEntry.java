@@ -1,6 +1,7 @@
 package com.ai.jmeter.agent.domain.controlplane;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import com.ai.jmeter.agent.domain.journal.HealJournal;
 import java.time.Instant;
 
@@ -13,6 +14,7 @@ import java.time.Instant;
  * stay on the workspace where a test runner expects to find them.
  *
  * @param runId           the run this entry accounts for
+ * @param tenant          the organization it was run for; what every read is scoped by
  * @param recordedAt      when the run finished
  * @param mode            the ingestion mode it was driven in
  * @param attempts        how many generate/execute/heal cycles it consumed
@@ -24,6 +26,7 @@ import java.time.Instant;
  */
 public record RunLedgerEntry(
         String runId,
+        TenantId tenant,
         Instant recordedAt,
         ExecutionMode mode,
         int attempts,
@@ -36,6 +39,7 @@ public record RunLedgerEntry(
     public RunLedgerEntry {
         journal = journal == null ? HealJournal.empty() : journal;
         rationale = rationale == null ? "" : rationale;
+        tenant = tenant == null ? TenantId.local() : tenant;
     }
 
     /** @return {@code true} when the plan passed without any self-healing turn. */
@@ -44,7 +48,8 @@ public record RunLedgerEntry(
     }
 
     public String describe() {
-        return "Run %s (%s) at %s: %d attempt(s), %d sample(s), %d token(s), %s".formatted(
-                runId, mode, recordedAt, attempts, totalSamples, totalTokens, journal.churn());
+        return "Run %s (%s, tenant %s) at %s: %d attempt(s), %d sample(s), %d token(s), %s"
+                .formatted(runId, mode, tenant, recordedAt, attempts, totalSamples,
+                        totalTokens, journal.churn());
     }
 }

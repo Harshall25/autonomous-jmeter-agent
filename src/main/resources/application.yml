@@ -52,6 +52,26 @@ agent:
     # GitHub Actions sets $GITHUB_STEP_SUMMARY per step; leave unset elsewhere.
     # step-summary-file:
 
+  # Multi-tenancy and signed run provenance. Off by default: one operator on a laptop gets a
+  # control plane with no ceremony. Turning it on is a deliberate act, because it depends on
+  # an identity source and a signing key somebody has to supply.
+  tenancy:
+    enabled: ${AGENT_TENANCY_ENABLED:false}
+    # The tenant this process runs for. Each tenant's runs execute in their own process and
+    # workspace subdirectory, so a capture is never where another tenant's run can reach it.
+    tenant: ${AGENT_TENANT:local}
+    # Run manifests are signed with this. At least 32 characters, and from a secret store —
+    # provenance signed with a guessable key reads in an audit exactly like the real thing.
+    # With no key the agent refuses to sign rather than recording something that proves nothing.
+    signing-key: ${AGENT_SIGNING_KEY:}
+    # Recorded in every manifest, so a plan can be traced back to the instructions behind it.
+    prompt-revision: ${AGENT_PROMPT_REVISION:}
+    # Identity headers an authenticating proxy asserts. ONLY safe behind a gateway that strips
+    # these from inbound requests and sets them itself — the agent trusts what it is told.
+    user-header: X-Auth-Subject
+    tenant-header: X-Auth-Tenant
+    roles-header: X-Auth-Roles
+
 logging:
   level:
     com.ai.jmeter.agent: INFO

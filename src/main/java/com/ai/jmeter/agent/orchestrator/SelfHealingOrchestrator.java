@@ -11,6 +11,7 @@ import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.governance.RunManifest;
 import com.ai.jmeter.agent.domain.jmx.JmxMutation;
 import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.journal.HealTurn;
@@ -30,6 +31,8 @@ import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
+import com.ai.jmeter.agent.port.ManifestSignerPort;
+import com.ai.jmeter.agent.port.ProvenanceStorePort;
 import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
 import com.ai.jmeter.agent.port.RunLedgerPort;
@@ -39,6 +42,7 @@ import com.ai.jmeter.agent.port.WorkspacePort;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,6 +84,8 @@ public final class SelfHealingOrchestrator {
     private final WorkloadProfilerPort workloadProfiler;
     private final ResultStorePort resultStore;
     private final RunLedgerPort runLedger;
+    private final ProvenanceStorePort provenanceStore;
+    private final ManifestSignerPort manifestSigner;
     private final RegressionAnalyzer regressionAnalyzer;
     private final RootCauseAnalyzerPort rootCauseAnalyzer;
     private final OrchestratorSettings settings;
@@ -100,6 +106,8 @@ public final class SelfHealingOrchestrator {
             WorkloadProfilerPort workloadProfiler,
             ResultStorePort resultStore,
             RunLedgerPort runLedger,
+            ProvenanceStorePort provenanceStore,
+            ManifestSignerPort manifestSigner,
             RegressionAnalyzer regressionAnalyzer,
             RootCauseAnalyzerPort rootCauseAnalyzer,
             OrchestratorSettings settings) {
@@ -114,6 +122,8 @@ public final class SelfHealingOrchestrator {
         this.workloadProfiler = workloadProfiler;
         this.resultStore = resultStore;
         this.runLedger = runLedger;
+        this.provenanceStore = provenanceStore;
+        this.manifestSigner = manifestSigner;
         this.regressionAnalyzer = regressionAnalyzer;
         this.rootCauseAnalyzer = rootCauseAnalyzer;
         this.settings = settings;
@@ -168,7 +178,8 @@ public final class SelfHealingOrchestrator {
 
                 RunAnalysis analysis = analyzeResults(request, current, report);
                 log.info("{}", journal.describe());
-                fileInLedger(request.mode(), analysis, attempt, report, cost, current, journal);
+                fileInLedger(request, analysis, attempt, report, cost, current, journal);
+                attestRun(request, analysis, outcome.artifacts());
 
                 return new AgentRunOutcome(
                         request.mode(), current, outcome.artifacts(), report, attempt,
@@ -201,7 +212,7 @@ public final class SelfHealingOrchestrator {
      * not be reported as failed because an audit file was unwritable.
      */
     private void fileInLedger(
-            ExecutionMode mode,
+            AgentRunRequest request,
             RunAnalysis analysis,
             int attempts,
             ExecutionReport report,
@@ -211,8 +222,9 @@ public final class SelfHealingOrchestrator {
         try {
             runLedger.record(new RunLedgerEntry(
                     analysis.summary().runId(),
+                    request.requestedBy().tenant(),
                     analysis.summary().recordedAt(),
-                    mode,
+                    request.mode(),
                     attempts,
                     report.totalSamples(),
                     analysis.summary().planFingerprint(),
@@ -222,6 +234,37 @@ public final class SelfHealingOrchestrator {
         } catch (RuntimeException e) {
             log.warn("Could not file the run in the control plane ledger ({}); the run still passed",
                     e.getMessage());
+        }
+    }
+
+    /**
+     * Files the immutable, signed record of why this plan existed and who asked for it.
+     *
+     * <p>Best-effort like the ledger, and for the same reason: a run that genuinely passed must
+     * not be reported as failed because an audit file was unwritable. The failure is logged at
+     * warning rather than swallowed, because an organization that turned provenance on and is
+     * silently not getting it is in a worse position than one that never turned it on.
+     *
+     * @param artifacts never null here: only a successful attempt reaches this, and an attempt
+     *                  that never wrote its plan cannot have succeeded
+     */
+    private void attestRun(
+            AgentRunRequest request, RunAnalysis analysis, WorkspaceArtifacts artifacts) {
+        try {
+            RunManifest manifest = RunManifest.unsigned(
+                    analysis.summary().runId(),
+                    request.requestedBy().tenant(),
+                    request.requestedBy().id(),
+                    settings.promptRevision(),
+                    settings.modelsByTurn(),
+                    artifacts.digestsByFilename(),
+                    analysis.summary().recordedAt());
+
+            provenanceStore.record(manifest.signedWith(
+                    manifestSigner.sign(manifest.canonicalPayload())));
+        } catch (RuntimeException e) {
+            log.warn("Could not attest run {} ({}); the run itself still passed",
+                    analysis.summary().runId(), e.getMessage());
         }
     }
 

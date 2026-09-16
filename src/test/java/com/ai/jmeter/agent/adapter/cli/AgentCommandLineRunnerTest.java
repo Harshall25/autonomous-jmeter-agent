@@ -21,6 +21,7 @@ import com.ai.jmeter.agent.domain.ci.GateVerdict;
 import com.ai.jmeter.agent.domain.ci.PerformanceGate;
 import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.governance.Principal;
 import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.results.RunSummary;
 import java.time.Instant;
@@ -56,7 +57,8 @@ class AgentCommandLineRunnerTest {
 
     private AgentCommandLineRunner runner(boolean gateEnabled, GatePolicy policy) {
         return new AgentCommandLineRunner(
-                orchestrator, new PerformanceGate(policy), buildReporter, gateEnabled);
+                orchestrator, new PerformanceGate(policy), buildReporter, gateEnabled,
+                Principal.localOperator());
     }
 
     private static RunSummary summary() {

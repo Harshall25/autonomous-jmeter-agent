@@ -39,10 +39,18 @@ public final class FileSystemWorkspaceAdapter implements WorkspacePort {
 
     private final Path workspaceDirectory;
     private final Path jmeterLibDirectory;
+    private final ContentDigest contentDigest;
 
     public FileSystemWorkspaceAdapter(Path workspaceDirectory, Path jmeterLibDirectory) {
+        this(workspaceDirectory, jmeterLibDirectory, new ContentDigest());
+    }
+
+    /** Seam: lets a test substitute the digest algorithm. */
+    FileSystemWorkspaceAdapter(
+            Path workspaceDirectory, Path jmeterLibDirectory, ContentDigest contentDigest) {
         this.workspaceDirectory = workspaceDirectory;
         this.jmeterLibDirectory = jmeterLibDirectory;
+        this.contentDigest = contentDigest;
     }
 
     @Override
@@ -56,7 +64,12 @@ public final class FileSystemWorkspaceAdapter implements WorkspacePort {
             Files.writeString(csvData, result.csvTemplateContent(), StandardCharsets.UTF_8);
 
             log.info("Wrote test plan to {} and test data to {}", jmxScript, csvData);
-            return new WorkspaceArtifacts(jmxScript, csvData);
+            // Digested here, where the bytes just left our hands: a digest taken later attests
+            // only that the file has not changed since someone went looking.
+            return new WorkspaceArtifacts(
+                    jmxScript, csvData,
+                    contentDigest.of(result.jmxXmlContent()),
+                    contentDigest.of(result.csvTemplateContent()));
         } catch (IOException e) {
             throw new WorkspaceException(
                     "Unable to write generated artifacts to " + workspaceDirectory, e);

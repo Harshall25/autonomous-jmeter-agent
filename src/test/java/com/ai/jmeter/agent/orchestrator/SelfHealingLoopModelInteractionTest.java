@@ -26,6 +26,8 @@ import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.ResultStorePort;
+import com.ai.jmeter.agent.port.ManifestSignerPort;
+import com.ai.jmeter.agent.port.ProvenanceStorePort;
 import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.ai.jmeter.agent.support.TestFixtures;
@@ -96,6 +98,12 @@ class SelfHealingLoopModelInteractionTest {
     @Mock
     private RunLedgerPort runLedger;
 
+    @Mock
+    private ProvenanceStorePort provenanceStore;
+
+    @Mock
+    private ManifestSignerPort manifestSigner;
+
     /** Wraps a bound reply in the response envelope the adapter reads token usage from. */
     private static <T> ResponseEntity<ChatResponse, T> chatEntity(T entity) {
         return new ResponseEntity<>(
@@ -138,6 +146,8 @@ class SelfHealingLoopModelInteractionTest {
                 new AccessLogWorkloadProfiler(30),
                 resultStore,
                 runLedger,
+                provenanceStore,
+                manifestSigner,
                 new RegressionAnalyzer(5, 3.0, 1.10),
                 analysis -> List.of(),
                 OrchestratorSettings.defaults());

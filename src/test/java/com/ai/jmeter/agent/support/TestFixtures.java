@@ -3,6 +3,8 @@ package com.ai.jmeter.agent.support;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.config.AgentProperties;
 import com.ai.jmeter.agent.config.GateProperties;
+import com.ai.jmeter.agent.config.TenancyProperties;
+import com.ai.jmeter.agent.domain.cost.AgentTurn;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
@@ -69,12 +71,23 @@ public final class TestFixtures {
     }
 
     public static AgentProperties properties(Path homePath, Path libPath) {
+        return properties(homePath, libPath, Map.of());
+    }
+
+    public static AgentProperties properties(
+            Path homePath, Path libPath, Map<AgentTurn, String> models) {
         return new AgentProperties(
                 homePath, 3, Path.of("workspace"), Duration.ofMinutes(10), libPath,
                 150, 2000, 200, 8000, 500, false, 3, 50, 30,
                 10, 5, 3.0, 1.10, false,
                 false, "kubectl", "default", "jmeter:5.6", 4,
-                Path.of("workspace/shards"), "wiremock:3", 8089, 0L, Map.of());
+                Path.of("workspace/shards"), "wiremock:3", 8089, 0L, models);
+    }
+
+    /** Tenancy as a laptop gets it: off, one local operator, nothing signed. */
+    public static TenancyProperties tenancyProperties() {
+        return new TenancyProperties(
+                false, "local", null, "", "X-Auth-Subject", "X-Auth-Tenant", "X-Auth-Roles");
     }
 
     /** The gate as a pipeline gets it out of the box: off, and blocking on regressions once on. */

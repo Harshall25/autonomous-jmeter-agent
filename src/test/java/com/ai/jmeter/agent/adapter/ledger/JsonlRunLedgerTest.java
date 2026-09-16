@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.journal.HealTurn;
 import com.ai.jmeter.agent.domain.journal.PlanDiff;
@@ -23,6 +24,9 @@ import org.junit.jupiter.api.io.TempDir;
 @DisplayName("JsonlRunLedger")
 class JsonlRunLedgerTest {
 
+    private static final TenantId ACME = new TenantId("acme");
+    private static final TenantId GLOBEX = new TenantId("globex");
+
     @TempDir
     Path workspace;
 
@@ -36,8 +40,13 @@ class JsonlRunLedgerTest {
     }
 
     private static RunLedgerEntry entry(String runId, Instant at, HealJournal journal) {
+        return entry(runId, ACME, at, journal);
+    }
+
+    private static RunLedgerEntry entry(
+            String runId, TenantId tenant, Instant at, HealJournal journal) {
         return new RunLedgerEntry(
-                runId, at, ExecutionMode.API, journal.turnCount() + 1, 120,
+                runId, tenant, at, ExecutionMode.API, journal.turnCount() + 1, 120,
                 "plan-a", 4200, "Correlated the bearer token from /login", journal);
     }
 
@@ -53,7 +62,7 @@ class JsonlRunLedgerTest {
     void roundTripsAJournal() {
         ledger.record(entry("run-1", Instant.parse("2025-01-02T03:04:05Z"), journalWithOneTurn()));
 
-        RunLedgerEntry stored = ledger.find("run-1").orElseThrow();
+        RunLedgerEntry stored = ledger.find(ACME, "run-1").orElseThrow();
 
         assertThat(stored.mode()).isEqualTo(ExecutionMode.API);
         assertThat(stored.attempts()).isEqualTo(2);
@@ -73,7 +82,7 @@ class JsonlRunLedgerTest {
     void roundTripsACleanRun() {
         ledger.record(entry("run-clean", Instant.EPOCH, HealJournal.empty()));
 
-        RunLedgerEntry stored = ledger.find("run-clean").orElseThrow();
+        RunLedgerEntry stored = ledger.find(ACME, "run-clean").orElseThrow();
 
         assertThat(stored.healedFirstTime()).isTrue();
         assertThat(stored.journal().isEmpty()).isTrue();
@@ -86,7 +95,7 @@ class JsonlRunLedgerTest {
         ledger.record(entry("older", Instant.parse("2025-01-01T00:00:00Z"), HealJournal.empty()));
         ledger.record(entry("newer", Instant.parse("2025-03-01T00:00:00Z"), HealJournal.empty()));
 
-        assertThat(ledger.recent(10).stream().map(RunLedgerEntry::runId))
+        assertThat(ledger.recent(ACME, 10).stream().map(RunLedgerEntry::runId))
                 .containsExactly("newer", "older");
     }
 
@@ -96,15 +105,39 @@ class JsonlRunLedgerTest {
         ledger.record(entry("a", Instant.parse("2025-01-01T00:00:00Z"), HealJournal.empty()));
         ledger.record(entry("b", Instant.parse("2025-02-01T00:00:00Z"), HealJournal.empty()));
 
-        assertThat(ledger.recent(1)).singleElement()
+        assertThat(ledger.recent(ACME, 1)).singleElement()
                 .satisfies(run -> assertThat(run.runId()).isEqualTo("b"));
     }
 
     @Test
     @DisplayName("reports an empty ledger rather than failing on a first read")
     void missingLedgerIsEmpty() {
-        assertThat(ledger.recent(10)).isEmpty();
-        assertThat(ledger.find("anything")).isEmpty();
+        assertThat(ledger.recent(ACME, 10)).isEmpty();
+        assertThat(ledger.find(ACME, "anything")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("never hands one tenant another tenant's runs")
+    void scopesReadsToTheTenant() {
+        // Endpoint names and payload shapes are one organization's business. Scoping in the store
+        // rather than at the caller is what makes it a filter nobody can forget to apply.
+        ledger.record(entry("acme-run", ACME, Instant.EPOCH, HealJournal.empty()));
+        ledger.record(entry("globex-run", GLOBEX, Instant.EPOCH, HealJournal.empty()));
+
+        assertThat(ledger.recent(ACME, 10)).singleElement()
+                .satisfies(run -> assertThat(run.runId()).isEqualTo("acme-run"));
+        assertThat(ledger.recent(GLOBEX, 10)).singleElement()
+                .satisfies(run -> assertThat(run.runId()).isEqualTo("globex-run"));
+    }
+
+    @Test
+    @DisplayName("answers 'no such run' rather than 'not yours' for another tenant's run")
+    void anotherTenantsRunIsSimplyAbsent() {
+        // Distinguishing the two would let an outsider probe which run ids exist.
+        ledger.record(entry("globex-run", GLOBEX, Instant.EPOCH, HealJournal.empty()));
+
+        assertThat(ledger.find(ACME, "globex-run")).isEmpty();
+        assertThat(ledger.find(GLOBEX, "globex-run")).isPresent();
     }
 
     @Test
@@ -112,7 +145,7 @@ class JsonlRunLedgerTest {
     void unknownRunIsEmpty() {
         ledger.record(entry("run-1", Instant.EPOCH, HealJournal.empty()));
 
-        assertThat(ledger.find("run-2")).isEmpty();
+        assertThat(ledger.find(ACME, "run-2")).isEmpty();
     }
 
     @Test
@@ -122,7 +155,7 @@ class JsonlRunLedgerTest {
         Files.writeString(ledgerFile, System.lineSeparator() + "   " + System.lineSeparator(),
                 java.nio.file.StandardOpenOption.APPEND);
 
-        assertThat(ledger.recent(10)).hasSize(1);
+        assertThat(ledger.recent(ACME, 10)).hasSize(1);
     }
 
     @Test
@@ -132,7 +165,7 @@ class JsonlRunLedgerTest {
         Files.writeString(ledgerFile, "{not json" + System.lineSeparator(),
                 java.nio.file.StandardOpenOption.APPEND);
 
-        assertThat(ledger.recent(10)).singleElement()
+        assertThat(ledger.recent(ACME, 10)).singleElement()
                 .satisfies(run -> assertThat(run.runId()).isEqualTo("run-1"));
     }
 
@@ -154,9 +187,10 @@ class JsonlRunLedgerTest {
     @DisplayName("normalizes an entry the caller left half-filled")
     void normalizesSparseEntries() {
         RunLedgerEntry sparse = new RunLedgerEntry(
-                "run-1", Instant.EPOCH, ExecutionMode.SQL, 1, 0, "plan", 0, null, null);
+                "run-1", null, Instant.EPOCH, ExecutionMode.SQL, 1, 0, "plan", 0, null, null);
 
         assertThat(sparse.rationale()).isEmpty();
         assertThat(sparse.journal().isEmpty()).isTrue();
+        assertThat(sparse.tenant()).isEqualTo(TenantId.local());
     }
 }

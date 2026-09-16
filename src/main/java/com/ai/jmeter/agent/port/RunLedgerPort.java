@@ -1,6 +1,7 @@
 package com.ai.jmeter.agent.port;
 
 import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import java.util.List;
 import java.util.Optional;
 
@@ -24,14 +25,17 @@ public interface RunLedgerPort {
     void record(RunLedgerEntry entry);
 
     /**
-     * @param limit how many runs to return
-     * @return the most recently recorded runs, newest first
+     * @param tenant the organization asking
+     * @param limit  how many runs to return
+     * @return that tenant's most recently recorded runs, newest first
      */
-    List<RunLedgerEntry> recent(int limit);
+    List<RunLedgerEntry> recent(TenantId tenant, int limit);
 
     /**
-     * @param runId the run to look up
-     * @return the run, or empty when the ledger has no such run
+     * @param tenant the organization asking
+     * @param runId  the run to look up
+     * @return the run, or empty when this tenant has no such run — which is also the answer when
+     * another tenant does, so that a run id cannot be probed for
      */
-    Optional<RunLedgerEntry> find(String runId);
+    Optional<RunLedgerEntry> find(TenantId tenant, String runId);
 }

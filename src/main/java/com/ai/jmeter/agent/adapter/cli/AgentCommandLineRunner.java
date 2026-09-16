@@ -6,6 +6,7 @@ import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.ci.GateVerdict;
 import com.ai.jmeter.agent.domain.ci.PerformanceGate;
 import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
+import com.ai.jmeter.agent.domain.governance.Principal;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.port.BuildReporterPort;
 import java.nio.file.Path;
@@ -38,21 +39,25 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
     private final PerformanceGate performanceGate;
     private final BuildReporterPort buildReporter;
     private final boolean gateEnabled;
+    private final Principal principal;
 
     /**
      * @param gateEnabled when true, the run is judged against the pipeline's performance policy
      *                    and a breach fails the process; off by default so that adding the agent
      *                    to a pipeline never silently starts blocking merges
+     * @param principal   who runs started here are attributed to, in the provenance record
      */
     public AgentCommandLineRunner(
             SelfHealingOrchestrator orchestrator,
             PerformanceGate performanceGate,
             BuildReporterPort buildReporter,
-            boolean gateEnabled) {
+            boolean gateEnabled,
+            Principal principal) {
         this.orchestrator = orchestrator;
         this.performanceGate = performanceGate;
         this.buildReporter = buildReporter;
         this.gateEnabled = gateEnabled;
+        this.principal = principal;
     }
 
     @Override
@@ -90,7 +95,8 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
                 parseMode(mode.get()),
                 Path.of(source.get()),
                 CommandLineArguments.value(args, WORKLOAD_ARGUMENT)
-                        .map(Path::of).orElse(null)));
+                        .map(Path::of).orElse(null),
+                principal));
 
         log.info("""
                 Agentic run complete after {} attempt(s).

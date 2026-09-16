@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import com.ai.jmeter.agent.support.TestFixtures;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
@@ -72,5 +73,23 @@ class AgentPropertiesTest {
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties(AgentProperties.class)
     static class EnableAgentProperties {
+    }
+
+    @Nested
+    @DisplayName("tenancy")
+    class Tenancy {
+
+        @Test
+        @DisplayName("treats a missing or blank signing key as no key at all")
+        void recognizesAnAbsentSigningKey() {
+            assertThat(tenancy(null).hasSigningKey()).isFalse();
+            assertThat(tenancy("   ").hasSigningKey()).isFalse();
+            assertThat(tenancy("a-thirty-two-character-test-key!!").hasSigningKey()).isTrue();
+        }
+
+        private TenancyProperties tenancy(String signingKey) {
+            return new TenancyProperties(true, "acme", signingKey, "prompts@v3",
+                    "X-Auth-Subject", "X-Auth-Tenant", "X-Auth-Roles");
+        }
     }
 }

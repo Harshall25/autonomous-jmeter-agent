@@ -2,6 +2,7 @@ package com.ai.jmeter.agent.adapter.ledger;
 
 import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
+import com.ai.jmeter.agent.domain.governance.TenantId;
 import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.journal.HealTurn;
 import com.ai.jmeter.agent.domain.journal.PlanDiff;
@@ -56,8 +57,9 @@ public final class JsonlRunLedger implements RunLedgerPort {
     }
 
     @Override
-    public List<RunLedgerEntry> recent(int limit) {
+    public List<RunLedgerEntry> recent(TenantId tenant, int limit) {
         return readAll().stream()
+                .filter(entry -> entry.tenant().equals(tenant.value()))
                 .map(StoredEntry::toDomain)
                 .sorted(Comparator.comparing(RunLedgerEntry::recordedAt).reversed())
                 .limit(limit)
@@ -65,9 +67,10 @@ public final class JsonlRunLedger implements RunLedgerPort {
     }
 
     @Override
-    public Optional<RunLedgerEntry> find(String runId) {
+    public Optional<RunLedgerEntry> find(TenantId tenant, String runId) {
         return readAll().stream()
                 .filter(entry -> entry.runId().equals(runId))
+                .filter(entry -> entry.tenant().equals(tenant.value()))
                 .map(StoredEntry::toDomain)
                 .findFirst();
     }
@@ -94,6 +97,7 @@ public final class JsonlRunLedger implements RunLedgerPort {
     /** The on-disk shape, kept separate so Jackson never touches a domain type. */
     record StoredEntry(
             String runId,
+            String tenant,
             String recordedAt,
             String mode,
             int attempts,
@@ -106,6 +110,7 @@ public final class JsonlRunLedger implements RunLedgerPort {
         static StoredEntry from(RunLedgerEntry entry) {
             return new StoredEntry(
                     entry.runId(),
+                    entry.tenant().value(),
                     entry.recordedAt().toString(),
                     entry.mode().name(),
                     entry.attempts(),
@@ -119,6 +124,7 @@ public final class JsonlRunLedger implements RunLedgerPort {
         RunLedgerEntry toDomain() {
             return new RunLedgerEntry(
                     runId,
+                    new TenantId(tenant),
                     Instant.parse(recordedAt),
                     ExecutionMode.valueOf(mode),
                     attempts,

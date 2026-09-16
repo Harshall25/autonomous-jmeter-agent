@@ -117,11 +117,68 @@ class DomainValueObjectsTest {
         }
 
         @Test
+        @DisplayName("attributes a request with no principal to the local operator")
+        void defaultsToTheLocalOperator() {
+            AgentRunRequest anonymous = new AgentRunRequest(
+                    ExecutionMode.API, Path.of("a.har"), null, null);
+
+            assertThat(anonymous.requestedBy().id()).isEqualTo("local-operator");
+            assertThat(AgentRunRequest.of(ExecutionMode.API, Path.of("a.har")).requestedBy().id())
+                    .isEqualTo("local-operator");
+        }
+
+        @Test
         @DisplayName("rejects a missing source file")
         void rejectsNullSource() {
             assertThatNullPointerException()
                     .isThrownBy(() -> new AgentRunRequest(ExecutionMode.SQL, null, null))
                     .withMessageContaining("sourceFile");
+        }
+    }
+
+    @Nested
+    @DisplayName("WorkspaceArtifacts")
+    class WorkspaceArtifactsTest {
+
+        @Test
+        @DisplayName("records the digests whatever wrote the bytes took")
+        void carriesDigests() {
+            WorkspaceArtifacts artifacts = new WorkspaceArtifacts(
+                    Path.of("workspace/auto_test.jmx"), Path.of("workspace/test_data.csv"),
+                    "sha256:plan", "sha256:data");
+
+            assertThat(artifacts.digestsByFilename())
+                    .containsEntry("auto_test.jmx", "sha256:plan")
+                    .containsEntry("test_data.csv", "sha256:data");
+        }
+
+        @Test
+        @DisplayName("reports no digests when neither was recorded")
+        void undigestedArtifactsReportNothing() {
+            assertThat(new WorkspaceArtifacts(Path.of("a.jmx"), Path.of("a.csv"))
+                    .digestsByFilename()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("still reports what it has when only one side was digested")
+        void partiallyDigestedArtifacts() {
+            assertThat(new WorkspaceArtifacts(
+                    Path.of("a.jmx"), Path.of("a.csv"), "sha256:plan", "").digestsByFilename())
+                    .containsEntry("a.jmx", "sha256:plan")
+                    .containsEntry("a.csv", "");
+            assertThat(new WorkspaceArtifacts(
+                    Path.of("a.jmx"), Path.of("a.csv"), "", "sha256:data").digestsByFilename())
+                    .containsEntry("a.csv", "sha256:data");
+        }
+
+        @Test
+        @DisplayName("treats absent digests as unrecorded rather than null")
+        void normalizesAbsentDigests() {
+            WorkspaceArtifacts artifacts =
+                    new WorkspaceArtifacts(Path.of("a.jmx"), Path.of("a.csv"), null, null);
+
+            assertThat(artifacts.jmxDigest()).isEmpty();
+            assertThat(artifacts.csvDigest()).isEmpty();
         }
     }
 
