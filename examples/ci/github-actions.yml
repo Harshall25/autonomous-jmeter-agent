@@ -1,0 +1,87 @@
+# Example workflow: gate a pull request on performance, and report the result on the PR itself.
+#
+# Copy into .github/workflows/ in the repository whose service is being tested. The agent runs
+# against the changed endpoints, posts a percentile-delta table as a comment, and exits 2 when
+# the policy is breached — which fails this check and blocks the merge.
+#
+# Exit codes: 0 the gate passed, 2 the gate blocked the change, 1 the agent itself failed.
+# They are distinct on purpose: "too slow" is a finding to act on, "crashed" is a bug to report.
+
+name: Performance gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  performance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Build the agent
+        run: mvn -B -DskipTests package
+
+      - name: Install JMeter
+        run: |
+          curl -fsSL -o jmeter.tgz \
+            https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz
+          tar -xzf jmeter.tgz
+
+      - name: Run the agent against the changed endpoints
+        id: gate
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          JMETER_HOME: ${{ github.workspace }}/apache-jmeter-5.6.3/bin
+          # Where the agent writes the step summary; GitHub sets this for every step.
+          AGENT_GATE_STEPSUMMARYFILE: ${{ github.env.GITHUB_STEP_SUMMARY }}
+        run: |
+          java -jar target/autonomous-jmeter-agent-1.0.0-SNAPSHOT.jar \
+            --mode=OPENAPI \
+            --source=openapi.yaml \
+            --workload=telemetry/access.log \
+            --agent.gate.enabled=true \
+            --agent.gate.fail-on-regression=true \
+            --agent.gate.max-p95-millis=1500
+
+      - name: Post the percentile table on the pull request
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'workspace/performance-report.md';
+            if (!fs.existsSync(path)) return;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: fs.readFileSync(path, 'utf8')
+            });
+
+      # The comment is posted first, so a blocked merge always arrives with the table that
+      # explains it rather than a bare red check.
+      - name: Fail the check when the gate blocked the change
+        if: steps.gate.outcome == 'failure'
+        run: exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-artifacts
+          path: |
+            workspace/auto_test.jmx
+            workspace/results.jtl
+            workspace/performance-report.md
+            workspace/run-ledger.jsonl

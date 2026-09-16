@@ -36,6 +36,22 @@ agent:
     max-process-output-characters: 8000
     max-recorded-failures: 500
 
+  # What the pipeline is willing to merge. Off by default: adding the agent to a pipeline
+  # should never silently start failing builds. See examples/ci/github-actions.yml.
+  gate:
+    enabled: ${AGENT_GATE_ENABLED:false}
+    # Block when a sampler is materially and unusually slower than its own baseline.
+    fail-on-regression: true
+    # A healed plan may be testing something other than what the change touched. Off by
+    # default, because rejecting every healed plan defeats the point of self-healing.
+    fail-on-healing: false
+    # Absolute p95 ceiling in milliseconds; 0 means no ceiling.
+    max-p95-millis: 0
+    max-failure-rate-percent: 0
+    report-file: ${AGENT_WORKSPACE:workspace}/performance-report.md
+    # GitHub Actions sets $GITHUB_STEP_SUMMARY per step; leave unset elsewhere.
+    # step-summary-file:
+
 logging:
   level:
     com.ai.jmeter.agent: INFO

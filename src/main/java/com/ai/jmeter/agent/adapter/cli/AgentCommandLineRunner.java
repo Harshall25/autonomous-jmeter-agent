@@ -3,7 +3,11 @@ package com.ai.jmeter.agent.adapter.cli;
 import com.ai.jmeter.agent.domain.AgentRunOutcome;
 import com.ai.jmeter.agent.domain.AgentRunRequest;
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.domain.ci.GateVerdict;
+import com.ai.jmeter.agent.domain.ci.PerformanceGate;
+import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
+import com.ai.jmeter.agent.port.BuildReporterPort;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
@@ -31,9 +35,24 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
     private static final String WORKLOAD_ARGUMENT = "--workload=";
 
     private final SelfHealingOrchestrator orchestrator;
+    private final PerformanceGate performanceGate;
+    private final BuildReporterPort buildReporter;
+    private final boolean gateEnabled;
 
-    public AgentCommandLineRunner(SelfHealingOrchestrator orchestrator) {
+    /**
+     * @param gateEnabled when true, the run is judged against the pipeline's performance policy
+     *                    and a breach fails the process; off by default so that adding the agent
+     *                    to a pipeline never silently starts blocking merges
+     */
+    public AgentCommandLineRunner(
+            SelfHealingOrchestrator orchestrator,
+            PerformanceGate performanceGate,
+            BuildReporterPort buildReporter,
+            boolean gateEnabled) {
         this.orchestrator = orchestrator;
+        this.performanceGate = performanceGate;
+        this.buildReporter = buildReporter;
+        this.gateEnabled = gateEnabled;
     }
 
     @Override
@@ -82,6 +101,29 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
                 outcome.cost().describe(),
                 outcome.journal().churn(),
                 outcome.script().executionRationale());
+
+        applyPerformanceGate(outcome);
+    }
+
+    /**
+     * Judges the run against the pipeline's policy, publishes the report either way, and fails
+     * the process on a breach.
+     *
+     * <p>The report is published before the failure is raised, so a blocked build still leaves
+     * the reviewer the percentile table that explains the block.
+     */
+    private void applyPerformanceGate(AgentRunOutcome outcome) {
+        if (!gateEnabled) {
+            return;
+        }
+        GateVerdict verdict = performanceGate.judge(outcome);
+        buildReporter.publish(verdict, performanceGate.comment(outcome, verdict));
+
+        if (!verdict.passed()) {
+            log.error("{}", verdict.describe());
+            throw new PerformanceGateFailedException(verdict);
+        }
+        log.info("{}", verdict.describe());
     }
 
     private static Optional<String> argumentValue(String[] args, String prefix) {

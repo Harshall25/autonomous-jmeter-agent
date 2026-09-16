@@ -2,7 +2,9 @@ package com.ai.jmeter.agent.adapter.cli;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -14,15 +16,21 @@ import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
+import com.ai.jmeter.agent.domain.ci.GatePolicy;
+import com.ai.jmeter.agent.domain.ci.GateVerdict;
+import com.ai.jmeter.agent.domain.ci.PerformanceGate;
+import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
 import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.results.RunSummary;
 import java.time.Instant;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
+import com.ai.jmeter.agent.port.BuildReporterPort;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -39,8 +47,16 @@ class AgentCommandLineRunnerTest {
     @Mock
     private SelfHealingOrchestrator orchestrator;
 
+    @Mock
+    private BuildReporterPort buildReporter;
+
     private AgentCommandLineRunner runner() {
-        return new AgentCommandLineRunner(orchestrator);
+        return runner(false, GatePolicy.defaults());
+    }
+
+    private AgentCommandLineRunner runner(boolean gateEnabled, GatePolicy policy) {
+        return new AgentCommandLineRunner(
+                orchestrator, new PerformanceGate(policy), buildReporter, gateEnabled);
     }
 
     private static RunSummary summary() {
@@ -163,5 +179,68 @@ class AgentCommandLineRunnerTest {
                 .withMessageContaining("Unknown mode 'GRPC'")
                 .withMessageContaining("API")
                 .withMessageContaining("SQL");
+    }
+
+    @Nested
+    @DisplayName("the CI performance gate")
+    class Gating {
+
+        @Test
+        @DisplayName("stays out of the way until a pipeline asks for it")
+        void offByDefault() {
+            stubSuccessfulRun();
+
+            runner().run("--mode=API", "--source=a.har");
+
+            verifyNoInteractions(buildReporter);
+        }
+
+        @Test
+        @DisplayName("publishes the report and lets the build through when nothing moved")
+        void publishesAPassingReport() {
+            stubSuccessfulRun();
+
+            runner(true, GatePolicy.defaults()).run("--mode=API", "--source=a.har");
+
+            ArgumentCaptor<GateVerdict> verdict = ArgumentCaptor.forClass(GateVerdict.class);
+            ArgumentCaptor<String> comment = ArgumentCaptor.forClass(String.class);
+            verify(buildReporter).publish(verdict.capture(), comment.capture());
+            assertThat(verdict.getValue().passed()).isTrue();
+            assertThat(comment.getValue()).contains("Performance gate passed");
+        }
+
+        @Test
+        @DisplayName("fails the process with its own exit code when the policy is breached")
+        void failsTheBuildOnABreach() {
+            stubSuccessfulRun();
+            AgentCommandLineRunner runner = runner(true, new GatePolicy(true, true, 0, 0));
+
+            assertThatThrownBy(() -> runner.run("--mode=API", "--source=a.har"))
+                    .isInstanceOf(PerformanceGateFailedException.class)
+                    .satisfies(thrown -> assertThat(
+                            ((PerformanceGateFailedException) thrown).verdict().exitCode())
+                            .isEqualTo(2));
+        }
+
+        @Test
+        @DisplayName("publishes the report before failing, so the block is explained")
+        void publishesBeforeFailing() {
+            // A blocked build with no table is a blocked build somebody switches the gate off for.
+            stubSuccessfulRun();
+            AgentCommandLineRunner runner = runner(true, new GatePolicy(true, true, 0, 0));
+
+            assertThatThrownBy(() -> runner.run("--mode=API", "--source=a.har"))
+                    .isInstanceOf(PerformanceGateFailedException.class);
+
+            verify(buildReporter).publish(any(), anyString());
+        }
+
+        @Test
+        @DisplayName("never reaches the gate when there was no run to judge")
+        void noRunMeansNoGate() {
+            runner(true, GatePolicy.defaults()).run("--mode=API");
+
+            verifyNoInteractions(buildReporter);
+        }
     }
 }

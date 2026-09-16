@@ -2,6 +2,7 @@ package com.ai.jmeter.agent.support;
 
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.config.AgentProperties;
+import com.ai.jmeter.agent.config.GateProperties;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
@@ -74,5 +75,11 @@ public final class TestFixtures {
                 10, 5, 3.0, 1.10, false,
                 false, "kubectl", "default", "jmeter:5.6", 4,
                 Path.of("workspace/shards"), "wiremock:3", 8089, 0L, Map.of());
+    }
+
+    /** The gate as a pipeline gets it out of the box: off, and blocking on regressions once on. */
+    public static GateProperties gateProperties() {
+        return new GateProperties(
+                false, true, false, 0, 0, Path.of("workspace/performance-report.md"), null);
     }
 }

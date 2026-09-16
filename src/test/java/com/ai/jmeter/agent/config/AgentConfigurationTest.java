@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
+import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
@@ -19,6 +20,9 @@ import com.ai.jmeter.agent.adapter.virtualization.WireMockVirtualizationAdapter;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
 import com.ai.jmeter.agent.domain.ExecutionMode;
+import com.ai.jmeter.agent.domain.ci.GatePolicy;
+import com.ai.jmeter.agent.domain.ci.GateVerdict;
+import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
@@ -32,6 +36,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.boot.ExitCodeExceptionMapper;
 import org.springframework.core.io.ClassPathResource;
 
 /**
@@ -173,6 +178,31 @@ class AgentConfigurationTest {
     }
 
     @Test
+    @DisplayName("binds the build reporter to the GitHub Actions adapter")
+    void bindsBuildReporterPort() {
+        assertThat(configuration.buildReporterPort(TestFixtures.gateProperties()))
+                .isInstanceOf(GitHubActionsBuildReporter.class);
+    }
+
+    @Test
+    @DisplayName("builds the gate from the pipeline's own policy")
+    void bindsPerformanceGate() {
+        assertThat(configuration.performanceGate(TestFixtures.gateProperties())).isNotNull();
+        assertThat(TestFixtures.gateProperties().toPolicy())
+                .isEqualTo(new GatePolicy(true, false, 0, 0));
+    }
+
+    @Test
+    @DisplayName("gives a blocked merge an exit code a pipeline can tell from a crash")
+    void mapsGateFailureToItsOwnExitCode() {
+        ExitCodeExceptionMapper mapper = configuration.performanceGateExitCodeMapper();
+
+        assertThat(mapper.getExitCode(new PerformanceGateFailedException(
+                GateVerdict.blocked(List.of("checkout regressed"))))).isEqualTo(2);
+        assertThat(mapper.getExitCode(new IllegalStateException("something broke"))).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("binds the workspace port to the filesystem adapter")
     void bindsWorkspacePort() {
         WorkspacePort port = configuration.workspacePort(properties());
@@ -203,7 +233,12 @@ class AgentConfigurationTest {
                 properties());
 
         assertThat(orchestrator).isNotNull();
-        assertThat(configuration.agentCommandLineRunner(orchestrator))
+        GateProperties gate = TestFixtures.gateProperties();
+        assertThat(configuration.agentCommandLineRunner(
+                orchestrator,
+                configuration.performanceGate(gate),
+                configuration.buildReporterPort(gate),
+                gate))
                 .isInstanceOf(AgentCommandLineRunner.class);
     }
 }

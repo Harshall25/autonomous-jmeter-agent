@@ -6,6 +6,7 @@ import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiRootCauseAnalyzer;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
+import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
@@ -27,9 +28,12 @@ import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
 import com.ai.jmeter.agent.adapter.virtualization.WireMockVirtualizationAdapter;
 import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
+import com.ai.jmeter.agent.domain.ci.PerformanceGate;
+import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
 import com.ai.jmeter.agent.orchestrator.OrchestratorSettings;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
+import com.ai.jmeter.agent.port.BuildReporterPort;
 import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.HealMemoryPort;
@@ -48,6 +52,7 @@ import java.util.List;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.ExitCodeExceptionMapper;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -62,7 +67,7 @@ import org.springframework.core.io.Resource;
  * constructible in a unit test with nothing but {@code new}.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(AgentProperties.class)
+@EnableConfigurationProperties({AgentProperties.class, GateProperties.class})
 public class AgentConfiguration {
 
     @Bean
@@ -190,8 +195,38 @@ public class AgentConfiguration {
     }
 
     @Bean
-    public AgentCommandLineRunner agentCommandLineRunner(SelfHealingOrchestrator orchestrator) {
-        return new AgentCommandLineRunner(orchestrator);
+    public AgentCommandLineRunner agentCommandLineRunner(
+            SelfHealingOrchestrator orchestrator,
+            PerformanceGate performanceGate,
+            BuildReporterPort buildReporterPort,
+            GateProperties gateProperties) {
+        return new AgentCommandLineRunner(
+                orchestrator, performanceGate, buildReporterPort, gateProperties.enabled());
+    }
+
+    @Bean
+    public PerformanceGate performanceGate(GateProperties gateProperties) {
+        return new PerformanceGate(gateProperties.toPolicy());
+    }
+
+    @Bean
+    public BuildReporterPort buildReporterPort(GateProperties gateProperties) {
+        return new GitHubActionsBuildReporter(
+                gateProperties.reportFile(), gateProperties.stepSummaryFile(), System.out);
+    }
+
+    /**
+     * Gives a blocked merge its own exit code.
+     *
+     * <p>A pipeline has to be able to tell "the change is too slow" from "the agent crashed":
+     * the first is a finding to act on, the second is a bug to report, and collapsing both into
+     * exit 1 is how a gate ends up quietly bypassed.
+     */
+    @Bean
+    public ExitCodeExceptionMapper performanceGateExitCodeMapper() {
+        return exception -> exception instanceof PerformanceGateFailedException blocked
+                ? blocked.verdict().exitCode()
+                : 1;
     }
 
     @Bean
