@@ -69,6 +69,7 @@ public final class TestFixtures {
     public static AgentProperties properties(Path homePath, Path libPath) {
         return new AgentProperties(
                 homePath, 3, Path.of("workspace"), Duration.ofMinutes(10), libPath,
-                150, 2000, 200, 8000, 500, false, 3, 50, 30, 0L, Map.of());
+                150, 2000, 200, 8000, 500, false, 3, 50, 30,
+                10, 5, 3.0, 1.10, false, 0L, Map.of());
     }
 }

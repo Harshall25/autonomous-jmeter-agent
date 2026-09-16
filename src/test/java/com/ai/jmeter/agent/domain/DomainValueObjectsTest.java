@@ -3,7 +3,10 @@ package com.ai.jmeter.agent.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.results.RunSummary;
+import java.time.Instant;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import java.nio.file.Path;
 import java.util.List;
@@ -125,6 +128,10 @@ class DomainValueObjectsTest {
     @DisplayName("AgentRunOutcome")
     class AgentRunOutcomeTest {
 
+        private RunSummary summary() {
+            return new RunSummary("run-1", "fp", Instant.EPOCH, java.util.Map.of(), 1, 0);
+        }
+
         private AgentRunOutcome outcomeAfter(int attempts) {
             return new AgentRunOutcome(
                     ExecutionMode.API,
@@ -133,7 +140,8 @@ class DomainValueObjectsTest {
                     ExecutionReport.success(1, ""),
                     attempts,
                     RedactionResult.clean("[]"),
-                    RunCost.empty(0));
+                    RunCost.empty(0),
+                    RunAnalysis.withoutComparison(summary()));
         }
 
         @Test

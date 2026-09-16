@@ -30,6 +30,13 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param recalledPrecedents         how many past repairs to put in front of the model per turn
  * @param maxTopics                  cap on streaming topics forwarded to the model
  * @param workloadRampUpSeconds      ramp-up applied when a workload shape is inferred
+ * @param historyDepth               how many past runs a regression baseline draws on
+ * @param minimumBaselineRuns        runs needed before a baseline is trusted at all
+ * @param regressionDeviationThreshold robust deviations above baseline that count as
+ *                                   a regression
+ * @param regressionMinimumChangeRatio floor on relative change, so a statistically
+ *                                   significant but trivial move does not fail a build
+ * @param traceCorrelation           emit a W3C traceparent on every request
  * @param tokenBudget                hard ceiling on tokens per run; zero means unlimited
  * @param models                     optional per-turn model overrides; unset turns use the
  *                                   client's configured default
@@ -50,6 +57,11 @@ public record AgentProperties(
         @DefaultValue("3") int recalledPrecedents,
         @DefaultValue("50") int maxTopics,
         @DefaultValue("30") int workloadRampUpSeconds,
+        @DefaultValue("10") int historyDepth,
+        @DefaultValue("5") int minimumBaselineRuns,
+        @DefaultValue("3.0") double regressionDeviationThreshold,
+        @DefaultValue("1.10") double regressionMinimumChangeRatio,
+        @DefaultValue("false") boolean traceCorrelation,
         @DefaultValue("0") long tokenBudget,
         Map<AgentTurn, String> models) {
 

@@ -24,7 +24,10 @@ import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.SampleFailure;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.results.RunSummary;
+import com.ai.jmeter.agent.domain.results.SampleStatistics;
 import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.domain.jmx.JmxMutation;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
@@ -43,6 +46,8 @@ import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
+import com.ai.jmeter.agent.port.ResultStoreException;
+import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.nio.file.Path;
@@ -120,6 +125,9 @@ class SelfHealingOrchestratorTest {
     @Mock
     private WorkloadProfilerPort workloadProfiler;
 
+    @Mock
+    private ResultStorePort resultStore;
+
     @BeforeEach
     void setUp() {
         when(harParser.supportedMode()).thenReturn(ExecutionMode.API);
@@ -136,13 +144,20 @@ class SelfHealingOrchestratorTest {
         when(memory.recall(anyString(), anyInt())).thenReturn(List.of());
         when(costGovernor.currentCost()).thenReturn(RunCost.empty(0));
         when(workloadProfiler.profile(any())).thenReturn(WorkloadModel.smokeTest());
+        when(resultStore.history(anyString(), anyInt())).thenReturn(List.of());
     }
 
     private SelfHealingOrchestrator orchestrator(int maxAttempts, boolean strictCompliance) {
+        return orchestrator(maxAttempts, strictCompliance, false);
+    }
+
+    private SelfHealingOrchestrator orchestrator(
+            int maxAttempts, boolean strictCompliance, boolean traceCorrelation) {
         return new SelfHealingOrchestrator(
                 new TrafficParserRegistry(List.of(harParser)),
                 agent, executionEngine, workspace, redactor, jmxDocument, memory, costGovernor,
-                workloadProfiler, maxAttempts, strictCompliance, 3);
+                workloadProfiler, resultStore, new RegressionAnalyzer(5, 3.0, 1.10),
+                new OrchestratorSettings(maxAttempts, strictCompliance, 3, 10, traceCorrelation));
     }
 
     private AgentRunOutcome run(int maxAttempts) {
@@ -514,7 +529,8 @@ class SelfHealingOrchestratorTest {
             return new SelfHealingOrchestrator(
                     new TrafficParserRegistry(List.of(parser)),
                     agent, executionEngine, workspace, redactor, jmxDocument, memory,
-                    costGovernor, workloadProfiler, 3, false, 3)
+                    costGovernor, workloadProfiler, resultStore,
+                    new RegressionAnalyzer(5, 3.0, 1.10), OrchestratorSettings.defaults())
                     .run(AgentRunRequest.of(ExecutionMode.SQL, SOURCE));
         }
 
@@ -639,6 +655,119 @@ class SelfHealingOrchestratorTest {
             when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
 
             assertThat(runWithTelemetry().script()).isSameAs(FIRST_DRAFT);
+        }
+    }
+
+    @Nested
+    @DisplayName("results and observability")
+    class ResultsAndObservability {
+
+        private static final Map<String, SampleStatistics> STATISTICS = Map.of(
+                "login", new SampleStatistics("login", 100, 0, 42.0, 40, 90, 120, 300));
+
+        private static final ExecutionReport MEASURED_RUN =
+                ExecutionReport.success(100, "", STATISTICS);
+
+        @Test
+        @DisplayName("records what a passing run measured, keyed by the plan's endpoints")
+        void recordsPassingRun() {
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+
+            AgentRunOutcome outcome = run(3);
+
+            ArgumentCaptor<RunSummary> recorded = ArgumentCaptor.forClass(RunSummary.class);
+            verify(resultStore).record(recorded.capture());
+            assertThat(recorded.getValue().statisticsByLabel()).containsKey("login");
+            assertThat(recorded.getValue().planFingerprint()).isNotBlank();
+            assertThat(outcome.analysis().summary()).isEqualTo(recorded.getValue());
+        }
+
+        @Test
+        @DisplayName("groups runs of the same plan into one comparable series")
+        void fingerprintGroupsRunsOfTheSamePlan() {
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+
+            String first = run(3).analysis().summary().planFingerprint();
+            String second = run(3).analysis().summary().planFingerprint();
+
+            assertThat(first).isEqualTo(second);
+        }
+
+        @Test
+        @DisplayName("compares the run against the history of the same plan")
+        void comparesAgainstHistory() {
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+
+            run(3);
+
+            verify(resultStore).history(anyString(), eq(10));
+        }
+
+        @Test
+        @DisplayName("still reports a pass when the history cannot be written")
+        void recordingFailureDoesNotFailTheRun() {
+            // A run that genuinely passed must not be reported as failed because its history
+            // file was unwritable.
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+            org.mockito.Mockito.doThrow(new ResultStoreException("disk full", new RuntimeException()))
+                    .when(resultStore).record(any());
+
+            AgentRunOutcome outcome = run(3);
+
+            assertThat(outcome.report().successful()).isTrue();
+            assertThat(outcome.analysis().verdicts()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("records a run whose plan cannot be parsed, under an empty fingerprint")
+        void unparseablePlanStillRecords() {
+            when(jmxDocument.describe(anyString()))
+                    .thenThrow(new JmxDocumentException("mismatched tag"));
+            when(executionEngine.execute(any())).thenReturn(MEASURED_RUN);
+
+            assertThat(run(3).analysis().summary().planFingerprint()).isNotBlank();
+        }
+
+        @Test
+        @DisplayName("reports zero throughput when nothing was measured")
+        void zeroThroughputWhenUnmeasured() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            assertThat(run(3).analysis().summary().throughputPerSecond()).isZero();
+        }
+
+        @Test
+        @DisplayName("stamps every request with a traceparent when correlation is enabled")
+        void injectsTraceparent() {
+            // Knowing p99 rose is not actionable; joining the sampler to a server span is.
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            orchestrator(3, false, true)
+                    .run(new AgentRunRequest(ExecutionMode.API, SOURCE, null));
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<JmxMutation>> edits = ArgumentCaptor.forClass(List.class);
+            verify(jmxDocument).apply(anyString(), edits.capture());
+
+            assertThat(edits.getValue()).singleElement()
+                    .isInstanceOfSatisfying(JmxMutation.SetHeader.class, header -> {
+                        assertThat(header.isPlanWide()).isTrue();
+                        assertThat(header.headerName()).isEqualTo("traceparent");
+                        assertThat(header.headerValue())
+                                .as("W3C traceparent: version, 128-bit trace, 64-bit span, sampled")
+                                .matches("00-\\$\\{__RandomString\\(32,[0-9a-f]+\\)}"
+                                        + "-\\$\\{__RandomString\\(16,[0-9a-f]+\\)}-01");
+                    });
+        }
+
+        @Test
+        @DisplayName("leaves the plan untouched when trace correlation is off")
+        void noTraceparentWhenDisabled() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            run(3);
+
+            verify(jmxDocument, never()).apply(anyString(), anyList());
         }
     }
 }

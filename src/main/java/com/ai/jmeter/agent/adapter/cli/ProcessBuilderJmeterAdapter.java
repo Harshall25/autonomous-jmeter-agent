@@ -115,7 +115,8 @@ public final class ProcessBuilderJmeterAdapter implements ExecutionEnginePort {
             log.error("JMeter completed but recorded no samples");
             return ExecutionReport.noSamples(processOutput);
         }
-        return ExecutionReport.success(analysis.totalSamples(), processOutput);
+        return ExecutionReport.success(
+                analysis.totalSamples(), processOutput, analysis.statisticsByLabel());
     }
 
     private void deleteIfPresent(Path file) {

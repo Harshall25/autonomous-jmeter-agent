@@ -1,6 +1,7 @@
 package com.ai.jmeter.agent.adapter.cli;
 
 import com.ai.jmeter.agent.domain.SampleFailure;
+import com.ai.jmeter.agent.domain.results.SampleStatistics;
 import com.ai.jmeter.agent.port.ExecutionEngineException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -8,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +31,7 @@ public final class JtlResultParser {
     private static final String COLUMN_RESPONSE_CODE = "responsecode";
     private static final String COLUMN_RESPONSE_MESSAGE = "responsemessage";
     private static final String COLUMN_LABEL = "label";
+    private static final String COLUMN_ELAPSED = "elapsed";
     private static final String COLUMN_FAILURE_MESSAGE = "failuremessage";
 
     private static final int FIRST_ERROR_STATUS = 400;
@@ -58,23 +61,36 @@ public final class JtlResultParser {
 
         Map<String, Integer> columns = indexColumns(lines.get(0));
         List<SampleFailure> failures = new ArrayList<>();
+        Map<String, List<Long>> elapsedByLabel = new LinkedHashMap<>();
+        Map<String, Long> failuresByLabel = new LinkedHashMap<>();
         int totalSamples = 0;
 
         for (String line : lines.subList(1, lines.size())) {
             totalSamples++;
             List<String> fields = splitCsvLine(line);
+            String label = field(fields, columns, COLUMN_LABEL);
+
+            elapsedByLabel.computeIfAbsent(label, key -> new ArrayList<>())
+                    .add(elapsedOf(fields, columns));
+
             if (!isFailure(fields, columns)) {
                 continue;
             }
+            failuresByLabel.merge(label, 1L, Long::sum);
             if (failures.size() < maxRecordedFailures) {
                 failures.add(new SampleFailure(
-                        field(fields, columns, COLUMN_LABEL),
+                        label,
                         field(fields, columns, COLUMN_RESPONSE_CODE),
                         field(fields, columns, COLUMN_RESPONSE_MESSAGE),
                         field(fields, columns, COLUMN_FAILURE_MESSAGE)));
             }
         }
-        return new JtlAnalysis(totalSamples, failures);
+
+        Map<String, SampleStatistics> statistics = new LinkedHashMap<>();
+        elapsedByLabel.forEach((label, elapsed) -> statistics.put(
+                label, SampleStatistics.of(label, elapsed, failuresByLabel.getOrDefault(label, 0L))));
+
+        return new JtlAnalysis(totalSamples, failures, statistics);
     }
 
     private List<String> readLines(Path jtlFile) {
@@ -114,6 +130,19 @@ public final class JtlResultParser {
             // JMeter writes prose here for transport-level problems, for example
             // "Non HTTP response code: java.net.ConnectException". Never a success.
             return true;
+        }
+    }
+
+    /** @return the sampler's elapsed time, or zero when the column is absent or unparseable. */
+    private long elapsedOf(List<String> fields, Map<String, Integer> columns) {
+        String elapsed = field(fields, columns, COLUMN_ELAPSED);
+        if (elapsed.isBlank()) {
+            return 0;
+        }
+        try {
+            return Long.parseLong(elapsed.trim());
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 

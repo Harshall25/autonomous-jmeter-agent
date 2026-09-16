@@ -13,7 +13,10 @@ import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.results.RunSummary;
+import java.time.Instant;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import java.nio.file.Path;
@@ -39,6 +42,10 @@ class AgentCommandLineRunnerTest {
         return new AgentCommandLineRunner(orchestrator);
     }
 
+    private static RunSummary summary() {
+        return new RunSummary("run-1", "fp", Instant.EPOCH, java.util.Map.of(), 1, 0);
+    }
+
     private void stubSuccessfulRun() {
         when(orchestrator.run(any())).thenReturn(new AgentRunOutcome(
                 ExecutionMode.API,
@@ -48,7 +55,8 @@ class AgentCommandLineRunnerTest {
                 ExecutionReport.success(4, ""),
                 2,
                 RedactionResult.clean("[]"),
-                RunCost.empty(0)));
+                RunCost.empty(0),
+                RunAnalysis.withoutComparison(summary())));
     }
 
     @Test

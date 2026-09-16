@@ -217,6 +217,56 @@ class JtlResultParserTest {
     }
 
     @Test
+    @DisplayName("treats a missing elapsed column as zero rather than failing the analysis")
+    void toleratesMissingElapsedColumn() throws IOException {
+        JtlAnalysis analysis = parser.parse(writeJtl("""
+                label,responseCode,success
+                login,200,true
+                """));
+
+        assertThat(analysis.statisticsByLabel().get("login").p95Millis()).isZero();
+    }
+
+    @Test
+    @DisplayName("treats an unparseable elapsed value as zero")
+    void toleratesNonNumericElapsed() throws IOException {
+        JtlAnalysis analysis = parser.parse(writeJtl("""
+                elapsed,label,responseCode,success
+                not-a-number,login,200,true
+                """));
+
+        assertThat(analysis.statisticsByLabel().get("login").maxMillis()).isZero();
+    }
+
+    @Test
+    @DisplayName("summarizes latency per sampler, which is what history compares")
+    void summarizesPerSampler() throws IOException {
+        JtlAnalysis analysis = parser.parse(writeJtl(HEADER + """
+
+                1,10,login,200,OK,T,text,true,
+                1,30,login,200,OK,T,text,true,
+                1,500,orders,200,OK,T,text,true,
+                """));
+
+        assertThat(analysis.statisticsByLabel()).containsOnlyKeys("login", "orders");
+        assertThat(analysis.statisticsByLabel().get("login").count()).isEqualTo(2);
+        assertThat(analysis.statisticsByLabel().get("orders").p95Millis()).isEqualTo(500);
+    }
+
+    @Test
+    @DisplayName("attributes failures to the sampler that produced them")
+    void attributesFailuresPerSampler() throws IOException {
+        JtlAnalysis analysis = parser.parse(writeJtl(HEADER + """
+
+                1,10,login,200,OK,T,text,true,
+                1,12,orders,401,Unauthorized,T,text,false,no token
+                """));
+
+        assertThat(analysis.statisticsByLabel().get("login").failures()).isZero();
+        assertThat(analysis.statisticsByLabel().get("orders").failures()).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("reports a results file that exists but cannot be read")
     void reportsUnreadableFile() throws IOException {
         Path directoryNamedLikeResults = tempDir.resolve("results.jtl");

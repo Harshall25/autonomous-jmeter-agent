@@ -146,6 +146,8 @@ class AgentConfigurationTest {
                 configuration.healMemoryPort(new ObjectMapper(), properties()),
                 configuration.costGovernorPort(properties()),
                 configuration.workloadProfilerPort(properties()),
+                configuration.resultStorePort(new ObjectMapper(), properties()),
+                configuration.regressionAnalyzer(properties()),
                 properties());
 
         assertThat(orchestrator).isNotNull();

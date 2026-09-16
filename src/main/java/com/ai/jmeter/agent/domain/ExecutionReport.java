@@ -1,6 +1,8 @@
 package com.ai.jmeter.agent.domain;
 
+import com.ai.jmeter.agent.domain.results.SampleStatistics;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -13,12 +15,14 @@ import java.util.stream.Collectors;
  * @param totalSamples   how many samplers JMeter recorded
  * @param failures       the failing rows, capped by the parser to keep prompts affordable
  * @param processOutput  stdout/stderr captured from the JMeter CLI
+ * @param statisticsByLabel latency distribution per sampler, empty when nothing was measured
  */
 public record ExecutionReport(
         ExecutionStatus status,
         int totalSamples,
         List<SampleFailure> failures,
-        String processOutput) {
+        String processOutput,
+        Map<String, SampleStatistics> statisticsByLabel) {
 
     private static final int DIGEST_FAILURE_LIMIT = 25;
     private static final int SIGNATURE_SAMPLE_LIMIT = 8;
@@ -26,28 +30,39 @@ public record ExecutionReport(
     public ExecutionReport {
         processOutput = processOutput == null ? "" : processOutput;
         failures = failures == null ? List.of() : List.copyOf(failures);
+        statisticsByLabel = statisticsByLabel == null ? Map.of() : Map.copyOf(statisticsByLabel);
     }
 
     /** A clean run: every sampler passed. */
     public static ExecutionReport success(int totalSamples, String processOutput) {
-        return new ExecutionReport(ExecutionStatus.SUCCESS, totalSamples, List.of(), processOutput);
+        return success(totalSamples, processOutput, Map.of());
+    }
+
+    /** A clean run, carrying the latency distribution the analytics layer compares across runs. */
+    public static ExecutionReport success(
+            int totalSamples, String processOutput,
+            Map<String, SampleStatistics> statisticsByLabel) {
+        return new ExecutionReport(
+                ExecutionStatus.SUCCESS, totalSamples, List.of(), processOutput, statisticsByLabel);
     }
 
     /** The plan ran, but samplers were rejected. */
     public static ExecutionReport sampleFailures(
             int totalSamples, List<SampleFailure> failures, String processOutput) {
         return new ExecutionReport(
-                ExecutionStatus.SAMPLE_FAILURE, totalSamples, failures, processOutput);
+                ExecutionStatus.SAMPLE_FAILURE, totalSamples, failures, processOutput, Map.of());
     }
 
     /** The JMeter CLI itself failed — the plan is most likely structurally invalid. */
     public static ExecutionReport processFailure(String processOutput) {
-        return new ExecutionReport(ExecutionStatus.PROCESS_FAILURE, 0, List.of(), processOutput);
+        return new ExecutionReport(
+                ExecutionStatus.PROCESS_FAILURE, 0, List.of(), processOutput, Map.of());
     }
 
     /** JMeter exited cleanly but exercised nothing. */
     public static ExecutionReport noSamples(String processOutput) {
-        return new ExecutionReport(ExecutionStatus.NO_SAMPLES, 0, List.of(), processOutput);
+        return new ExecutionReport(
+                ExecutionStatus.NO_SAMPLES, 0, List.of(), processOutput, Map.of());
     }
 
     /**
@@ -55,7 +70,8 @@ public record ExecutionReport(
      * output, so the healing loop consumes it through exactly the same path as a real failure.
      */
     public static ExecutionReport validationFailure(String findings) {
-        return new ExecutionReport(ExecutionStatus.VALIDATION_FAILURE, 0, List.of(), findings);
+        return new ExecutionReport(
+                ExecutionStatus.VALIDATION_FAILURE, 0, List.of(), findings, Map.of());
     }
 
     public boolean successful() {

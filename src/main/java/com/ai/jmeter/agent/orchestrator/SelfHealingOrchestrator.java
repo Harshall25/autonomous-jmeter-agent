@@ -6,6 +6,8 @@ import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
+import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
+import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.jmx.JmxMutation;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
@@ -14,6 +16,8 @@ import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 import com.ai.jmeter.agent.domain.redaction.SecretCategory;
+import com.ai.jmeter.agent.domain.results.PlanFingerprint;
+import com.ai.jmeter.agent.domain.results.RunSummary;
 import com.ai.jmeter.agent.domain.workload.WorkloadModel;
 import com.ai.jmeter.agent.port.CostGovernorPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
@@ -21,10 +25,14 @@ import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
+import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,6 +52,16 @@ public final class SelfHealingOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(SelfHealingOrchestrator.class);
 
+    private static final String TRACEPARENT_HEADER = "traceparent";
+
+    /**
+     * A W3C traceparent generated per sample by JMeter itself. Version 00, a fresh 128-bit trace
+     * id and 64-bit span id as lowercase hex, sampled flag set — so every request the plan issues
+     * appears in the server's tracing backend and its latency can be attributed to a real span.
+     */
+    private static final String TRACEPARENT_VALUE =
+            "00-${__RandomString(32,0123456789abcdef)}-${__RandomString(16,0123456789abcdef)}-01";
+
     private final TrafficParserRegistry parserRegistry;
     private final JmeterAgentPort agent;
     private final ExecutionEnginePort executionEngine;
@@ -53,17 +71,13 @@ public final class SelfHealingOrchestrator {
     private final HealMemoryPort memory;
     private final CostGovernorPort costGovernor;
     private final WorkloadProfilerPort workloadProfiler;
-    private final int maxAttempts;
-    private final boolean strictCompliance;
-    private final int recalledPrecedents;
+    private final ResultStorePort resultStore;
+    private final RegressionAnalyzer regressionAnalyzer;
+    private final OrchestratorSettings settings;
+    private int workloadConcurrency = 1;
 
     /**
-     * @param maxAttempts      total number of JMeter runs the agent may spend on one request,
-     *                         counting the first. Must be at least one.
-     * @param strictCompliance when true, a capture carrying regulated material is refused rather
-     *                         than sent to the model in substituted form
-     * @param recalledPrecedents how many past repairs to put in front of the model per turn
-     * @throws IllegalArgumentException if {@code maxAttempts} is below one
+     * @param settings the policy governing retries, compliance, memory and observability
      */
     public SelfHealingOrchestrator(
             TrafficParserRegistry parserRegistry,
@@ -75,12 +89,9 @@ public final class SelfHealingOrchestrator {
             HealMemoryPort memory,
             CostGovernorPort costGovernor,
             WorkloadProfilerPort workloadProfiler,
-            int maxAttempts,
-            boolean strictCompliance,
-            int recalledPrecedents) {
-        if (maxAttempts < 1) {
-            throw new IllegalArgumentException("maxAttempts must be at least 1, was " + maxAttempts);
-        }
+            ResultStorePort resultStore,
+            RegressionAnalyzer regressionAnalyzer,
+            OrchestratorSettings settings) {
         this.parserRegistry = parserRegistry;
         this.agent = agent;
         this.executionEngine = executionEngine;
@@ -90,9 +101,9 @@ public final class SelfHealingOrchestrator {
         this.memory = memory;
         this.costGovernor = costGovernor;
         this.workloadProfiler = workloadProfiler;
-        this.maxAttempts = maxAttempts;
-        this.strictCompliance = strictCompliance;
-        this.recalledPrecedents = recalledPrecedents;
+        this.resultStore = resultStore;
+        this.regressionAnalyzer = regressionAnalyzer;
+        this.settings = settings;
     }
 
     /**
@@ -119,12 +130,13 @@ public final class SelfHealingOrchestrator {
         warnIfJdbcDriverMissing(request);
 
         WorkloadModel workload = profileWorkload(request);
+        workloadConcurrency = workload.concurrentUsers();
 
         JmeterGenerationResult current = agent.generateScript(
                 briefFor(redaction.redactedPayload(), workload), request.mode());
         log.info("Initial plan generated. Variables identified: {}", current.identifiedVariables());
 
-        current = applyWorkloadShape(current, workload);
+        current = applyPostGenerationEdits(current, workload);
 
         AppliedRepair lastRepair = null;
 
@@ -134,22 +146,23 @@ public final class SelfHealingOrchestrator {
 
             if (report.successful()) {
                 log.info("Attempt {}/{} passed with {} samples and no failures",
-                        attempt, maxAttempts, report.totalSamples());
+                        attempt, settings.maxAttempts(), report.totalSamples());
                 recordPrecedent(lastRepair, true);
                 log.info("Run cost: {}", costGovernor.currentCost().describe());
                 return new AgentRunOutcome(
                         request.mode(), current, outcome.artifacts(), report, attempt,
-                        redaction, costGovernor.currentCost());
+                        redaction, costGovernor.currentCost(),
+                        analyzeResults(request, current, report));
             }
 
             log.warn("Attempt {}/{} failed: status={} failedSamples={}",
-                    attempt, maxAttempts, report.status(), report.failedSamples());
+                    attempt, settings.maxAttempts(), report.status(), report.failedSamples());
 
             // The repair that preceded this attempt did not work. Recording that is as valuable
             // as recording a success: it stops the next run proposing the same dead end.
             recordPrecedent(lastRepair, false);
 
-            if (attempt >= maxAttempts) {
+            if (attempt >= settings.maxAttempts()) {
                 log.error("Retry budget exhausted after {} attempt(s); giving up", attempt);
                 throw new SelfHealingFailedException(attempt, report);
             }
@@ -192,30 +205,92 @@ public final class SelfHealingOrchestrator {
     }
 
     /**
-     * Sets the thread group to the inferred concurrency.
+     * Applies the edits that are arithmetic rather than judgement: the inferred thread count, and
+     * trace propagation headers.
      *
-     * <p>Applied as a structural edit rather than asked for in the prompt: thread counts are
-     * arithmetic, and a model asked to reproduce a number in XML will sometimes round it.
+     * <p>Done as structural edits rather than asked for in the prompt because a model reproducing
+     * a number or a fixed header format in XML will sometimes round the first and mistype the
+     * second, and neither failure is visible until the results are already wrong.
      */
-    private JmeterGenerationResult applyWorkloadShape(
+    private JmeterGenerationResult applyPostGenerationEdits(
             JmeterGenerationResult plan, WorkloadModel workload) {
-        if (!workload.isCredible()) {
+        List<JmxMutation> edits = new ArrayList<>();
+
+        if (workload.isCredible()) {
+            edits.add(new JmxMutation.ConfigureThreadGroup(
+                    workload.concurrentUsers(), workload.rampUpSeconds(), 1));
+        }
+        if (settings.traceCorrelation()) {
+            edits.add(new JmxMutation.SetHeader("", TRACEPARENT_HEADER, TRACEPARENT_VALUE));
+        }
+        if (edits.isEmpty()) {
             return plan;
         }
+
         try {
-            String shaped = jmxDocument.apply(plan.jmxXmlContent(), List.of(
-                    new JmxMutation.ConfigureThreadGroup(
-                            workload.concurrentUsers(), workload.rampUpSeconds(), 1)));
-            log.info("Applied inferred workload: {} user(s), {}s ramp-up",
-                    workload.concurrentUsers(), workload.rampUpSeconds());
+            String shaped = jmxDocument.apply(plan.jmxXmlContent(), edits);
+            edits.forEach(edit -> log.info("Applied post-generation edit: {}", edit.describe()));
             return new JmeterGenerationResult(
                     shaped, plan.csvTemplateContent(),
                     plan.identifiedVariables(), plan.executionRationale());
         } catch (JmxDocumentException e) {
-            log.warn("Could not apply the inferred workload ({}); leaving the plan as generated",
+            log.warn("Could not apply post-generation edits ({}); leaving the plan as generated",
                     e.getMessage());
             return plan;
         }
+    }
+
+    /**
+     * Records what the passing run measured and compares it to the history of the same plan.
+     *
+     * <p>Recording is best-effort: a run that genuinely passed must not be reported as failed
+     * because its history file was unwritable.
+     */
+    private RunAnalysis analyzeResults(
+            AgentRunRequest request, JmeterGenerationResult plan, ExecutionReport report) {
+
+        RunSummary summary = new RunSummary(
+                UUID.randomUUID().toString(),
+                PlanFingerprint.of(request.mode(), samplerNamesOf(plan)),
+                Instant.now(),
+                report.statisticsByLabel(),
+                workloadConcurrency,
+                throughputOf(report));
+
+        try {
+            List<RunSummary> history = resultStore.history(
+                    summary.planFingerprint(), settings.historyDepth());
+            resultStore.record(summary);
+
+            RunAnalysis analysis = new RunAnalysis(
+                    summary, regressionAnalyzer.analyze(summary, history));
+            log.info("Result analysis:\n{}", analysis.describe());
+            return analysis;
+        } catch (RuntimeException e) {
+            log.warn("Could not record or compare run results ({}); the run itself still passed",
+                    e.getMessage());
+            return RunAnalysis.withoutComparison(summary);
+        }
+    }
+
+    private List<String> samplerNamesOf(JmeterGenerationResult plan) {
+        try {
+            return jmxDocument.describe(plan.jmxXmlContent()).samplerNames();
+        } catch (JmxDocumentException e) {
+            return List.of();
+        }
+    }
+
+    /**
+     * @return samples per second, derived from the mean latency and concurrency rather than wall
+     * clock, which the execution engine does not report
+     */
+    private static double throughputOf(ExecutionReport report) {
+        double meanMillis = report.statisticsByLabel().values().stream()
+                .mapToDouble(statistics -> statistics.meanMillis())
+                .average()
+                .orElse(0);
+        return meanMillis <= 0 ? 0 : 1000.0 / meanMillis;
     }
 
     /** Files a repair against the failure it was meant to fix, once the verdict is in. */
@@ -259,7 +334,7 @@ public final class SelfHealingOrchestrator {
     private RepairOutcome repair(JmeterGenerationResult current, ExecutionReport report) {
         String signature = report.failureSignature();
         JmxRepairPlan repairPlan = agent.proposeRepairs(
-                summarize(current), report.errorDigest(), memory.recall(signature, recalledPrecedents));
+                summarize(current), report.errorDigest(), memory.recall(signature, settings.recalledPrecedents()));
 
         if (repairPlan.requiresFullRewrite()) {
             log.info("Model asked for a full rewrite: {}", repairPlan.diagnosis());
@@ -326,7 +401,7 @@ public final class SelfHealingOrchestrator {
      * control that can be missed without anyone noticing is not a control.
      */
     private void enforceCompliancePolicy(RedactionResult redaction) {
-        if (!strictCompliance) {
+        if (!settings.strictCompliance()) {
             return;
         }
         List<SecretCategory> violations = redaction.strictPolicyViolations();

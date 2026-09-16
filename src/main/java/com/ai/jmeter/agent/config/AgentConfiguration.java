@@ -12,6 +12,7 @@ import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.memory.JsonlHealMemoryAdapter;
+import com.ai.jmeter.agent.adapter.results.JsonlResultStore;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.OpenApiParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.PostmanCollectionParserAdapter;
@@ -19,6 +20,8 @@ import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.StreamingManifestParserAdapter;
 import com.ai.jmeter.agent.adapter.redaction.PatternSensitiveDataRedactor;
 import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
+import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
+import com.ai.jmeter.agent.orchestrator.OrchestratorSettings;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.CostGovernorPort;
@@ -26,6 +29,7 @@ import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
+import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
@@ -166,6 +170,20 @@ public class AgentConfiguration {
     }
 
     @Bean
+    public ResultStorePort resultStorePort(ObjectMapper objectMapper, AgentProperties properties) {
+        return new JsonlResultStore(
+                objectMapper, properties.workspace().resolve("run-history.jsonl"));
+    }
+
+    @Bean
+    public RegressionAnalyzer regressionAnalyzer(AgentProperties properties) {
+        return new RegressionAnalyzer(
+                properties.minimumBaselineRuns(),
+                properties.regressionDeviationThreshold(),
+                properties.regressionMinimumChangeRatio());
+    }
+
+    @Bean
     public WorkloadProfilerPort workloadProfilerPort(AgentProperties properties) {
         return new AccessLogWorkloadProfiler(properties.workloadRampUpSeconds());
     }
@@ -186,6 +204,8 @@ public class AgentConfiguration {
             HealMemoryPort healMemoryPort,
             CostGovernorPort costGovernorPort,
             WorkloadProfilerPort workloadProfilerPort,
+            ResultStorePort resultStorePort,
+            RegressionAnalyzer regressionAnalyzer,
             AgentProperties properties) {
         return new SelfHealingOrchestrator(
                 trafficParserRegistry,
@@ -197,8 +217,13 @@ public class AgentConfiguration {
                 healMemoryPort,
                 costGovernorPort,
                 workloadProfilerPort,
-                properties.maxRetries(),
-                properties.strictCompliance(),
-                properties.recalledPrecedents());
+                resultStorePort,
+                regressionAnalyzer,
+                new OrchestratorSettings(
+                        properties.maxRetries(),
+                        properties.strictCompliance(),
+                        properties.recalledPrecedents(),
+                        properties.historyDepth(),
+                        properties.traceCorrelation()));
     }
 }

@@ -82,10 +82,11 @@ class ExecutionReportTest {
         @DisplayName("defaults null collaborators so the digest is always renderable")
         void defaultsNulls() {
             ExecutionReport report =
-                    new ExecutionReport(ExecutionStatus.PROCESS_FAILURE, 0, null, null);
+                    new ExecutionReport(ExecutionStatus.PROCESS_FAILURE, 0, null, null, null);
 
             assertThat(report.failures()).isEmpty();
             assertThat(report.processOutput()).isEmpty();
+            assertThat(report.statisticsByLabel()).isEmpty();
             assertThat(report.errorDigest()).isNotBlank();
         }
     }
