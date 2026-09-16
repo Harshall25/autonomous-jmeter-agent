@@ -3,6 +3,9 @@ spring:
     name: autonomous-jmeter-agent
   main:
     banner-mode: off
+    # A CLI by default: a run started from a pipeline has no business opening a port.
+    # Start with --spring.main.web-application-type=servlet to serve the control plane
+    # instead — the run ledger at /api/runs and the heal-diff UI at /.
     web-application-type: none
   ai:
     anthropic:

@@ -5,6 +5,7 @@ import com.ai.jmeter.agent.adapter.ai.ModelRouter;
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiRootCauseAnalyzer;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
+import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
@@ -14,6 +15,7 @@ import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesSettings;
+import com.ai.jmeter.agent.adapter.ledger.JsonlRunLedger;
 import com.ai.jmeter.agent.adapter.memory.JsonlHealMemoryAdapter;
 import com.ai.jmeter.agent.adapter.results.JsonlResultStore;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
@@ -35,6 +37,7 @@ import com.ai.jmeter.agent.port.JmeterAgentPort;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
+import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.ServiceVirtualizationPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
@@ -44,6 +47,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -211,6 +215,26 @@ public class AgentConfiguration {
     }
 
     @Bean
+    public RunLedgerPort runLedgerPort(ObjectMapper objectMapper, AgentProperties properties) {
+        return new JsonlRunLedger(
+                objectMapper, properties.workspace().resolve("run-ledger.jsonl"));
+    }
+
+    /**
+     * Serves the run ledger only when the application was started as a web application.
+     *
+     * <p>A CLI run started from a pipeline has no business opening a port, and an agent that
+     * silently binds one in every CI container would be an unwelcome surprise. The control plane
+     * is something an operator asks for with
+     * {@code --spring.main.web-application-type=servlet}.
+     */
+    @Bean
+    @ConditionalOnWebApplication
+    public ControlPlaneController controlPlaneController(RunLedgerPort runLedgerPort) {
+        return new ControlPlaneController(runLedgerPort);
+    }
+
+    @Bean
     public RegressionAnalyzer regressionAnalyzer(AgentProperties properties) {
         return new RegressionAnalyzer(
                 properties.minimumBaselineRuns(),
@@ -248,6 +272,7 @@ public class AgentConfiguration {
             CostGovernorPort costGovernorPort,
             WorkloadProfilerPort workloadProfilerPort,
             ResultStorePort resultStorePort,
+            RunLedgerPort runLedgerPort,
             RegressionAnalyzer regressionAnalyzer,
             RootCauseAnalyzerPort rootCauseAnalyzerPort,
             AgentProperties properties) {
@@ -262,6 +287,7 @@ public class AgentConfiguration {
                 costGovernorPort,
                 workloadProfilerPort,
                 resultStorePort,
+                runLedgerPort,
                 regressionAnalyzer,
                 rootCauseAnalyzerPort,
                 new OrchestratorSettings(

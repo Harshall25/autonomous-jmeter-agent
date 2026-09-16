@@ -6,6 +6,7 @@ import static org.mockito.Mockito.when;
 
 import com.ai.jmeter.agent.adapter.ai.PromptCatalog;
 import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
+import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
@@ -13,6 +14,7 @@ import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
+import com.ai.jmeter.agent.adapter.ledger.JsonlRunLedger;
 import com.ai.jmeter.agent.adapter.virtualization.WireMockVirtualizationAdapter;
 import com.ai.jmeter.agent.adapter.parser.HarParserAdapter;
 import com.ai.jmeter.agent.adapter.parser.SqlLogParserAdapter;
@@ -21,6 +23,7 @@ import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
+import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.ai.jmeter.agent.support.TestFixtures;
@@ -156,6 +159,20 @@ class AgentConfigurationTest {
     }
 
     @Test
+    @DisplayName("binds the run ledger the control plane reads from")
+    void bindsRunLedgerPort() {
+        assertThat(configuration.runLedgerPort(new ObjectMapper(), properties()))
+                .isInstanceOf(JsonlRunLedger.class);
+    }
+
+    @Test
+    @DisplayName("serves the control plane over the ledger it bound")
+    void bindsControlPlaneController() {
+        assertThat(configuration.controlPlaneController(mock(RunLedgerPort.class)))
+                .isInstanceOf(ControlPlaneController.class);
+    }
+
+    @Test
     @DisplayName("binds the workspace port to the filesystem adapter")
     void bindsWorkspacePort() {
         WorkspacePort port = configuration.workspacePort(properties());
@@ -178,6 +195,7 @@ class AgentConfigurationTest {
                 configuration.costGovernorPort(properties()),
                 configuration.workloadProfilerPort(properties()),
                 configuration.resultStorePort(new ObjectMapper(), properties()),
+                configuration.runLedgerPort(new ObjectMapper(), properties()),
                 configuration.regressionAnalyzer(properties()),
                 configuration.rootCauseAnalyzerPort(
                         mock(ChatClient.class), promptCatalog(),

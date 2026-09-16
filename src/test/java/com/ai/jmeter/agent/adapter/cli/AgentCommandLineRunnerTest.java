@@ -15,6 +15,7 @@ import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.results.RunSummary;
 import java.time.Instant;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
@@ -56,7 +57,8 @@ class AgentCommandLineRunnerTest {
                 2,
                 RedactionResult.clean("[]"),
                 RunCost.empty(0),
-                RunAnalysis.withoutComparison(summary())));
+                RunAnalysis.withoutComparison(summary()),
+                HealJournal.empty()));
     }
 
     @Test

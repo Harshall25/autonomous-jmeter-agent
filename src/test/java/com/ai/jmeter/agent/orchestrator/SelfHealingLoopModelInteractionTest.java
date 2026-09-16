@@ -26,6 +26,7 @@ import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.ResultStorePort;
+import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.ai.jmeter.agent.support.TestFixtures;
 import java.nio.file.Path;
@@ -92,6 +93,9 @@ class SelfHealingLoopModelInteractionTest {
     @Mock
     private ResultStorePort resultStore;
 
+    @Mock
+    private RunLedgerPort runLedger;
+
     /** Wraps a bound reply in the response envelope the adapter reads token usage from. */
     private static <T> ResponseEntity<ChatResponse, T> chatEntity(T entity) {
         return new ResponseEntity<>(
@@ -133,6 +137,7 @@ class SelfHealingLoopModelInteractionTest {
                 new BudgetedCostGovernor(0),
                 new AccessLogWorkloadProfiler(30),
                 resultStore,
+                runLedger,
                 new RegressionAnalyzer(5, 3.0, 1.10),
                 analysis -> List.of(),
                 OrchestratorSettings.defaults());

@@ -53,6 +53,17 @@
             <artifactId>spring-ai-starter-model-anthropic</artifactId>
         </dependency>
 
+        <!--
+            The control plane API. The application stays a CLI by default
+            (`spring.main.web-application-type: none`); started with that property set
+            to `servlet` it serves the run ledger and the heal-diff UI instead of
+            running a test.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>

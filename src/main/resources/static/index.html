@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JMeter Agent — Control Plane</title>
+    <style>
+        :root {
+            --ink: #16191d;
+            --muted: #5b6672;
+            --line: #dfe3e8;
+            --added: #e6ffed;
+            --added-ink: #14512a;
+            --removed: #ffeef0;
+            --removed-ink: #7d1c25;
+            --hunk: #eef2f7;
+            --accent: #1f5fbf;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--ink);
+            background: #fbfcfd;
+        }
+        header {
+            padding: 20px 28px;
+            border-bottom: 1px solid var(--line);
+            background: #fff;
+        }
+        h1 { margin: 0; font-size: 18px; letter-spacing: -0.01em; }
+        header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+        main { display: grid; grid-template-columns: 340px 1fr; min-height: calc(100vh - 78px); }
+        #runs { border-right: 1px solid var(--line); background: #fff; overflow-y: auto; }
+        .run {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--line);
+            cursor: pointer;
+        }
+        .run:hover { background: #f5f8fc; }
+        .run[aria-selected="true"] { background: #eef4fd; box-shadow: inset 3px 0 0 var(--accent); }
+        .run h2 { margin: 0; font-size: 13px; font-family: ui-monospace, SFMono-Regular, monospace; }
+        .run p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+        .badge {
+            display: inline-block;
+            padding: 1px 7px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+            background: var(--hunk);
+            color: var(--muted);
+        }
+        .badge.clean { background: var(--added); color: var(--added-ink); }
+        .badge.healed { background: #fff4e0; color: #8a5300; }
+        #detail { padding: 24px 28px; overflow-y: auto; }
+        .empty { color: var(--muted); }
+        dl { display: grid; grid-template-columns: 150px 1fr; gap: 6px 16px; margin: 0 0 24px; }
+        dt { color: var(--muted); font-size: 13px; }
+        dd { margin: 0; font-size: 13px; }
+        .turn { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 20px; background: #fff; }
+        .turn > h3 { margin: 0; padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }
+        .turn .body { padding: 12px 16px; }
+        .turn .why { margin: 0 0 10px; font-size: 13px; }
+        .turn ul { margin: 0 0 10px; padding-left: 20px; font-size: 13px; }
+        pre.diff {
+            margin: 0;
+            overflow-x: auto;
+            font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+            border-top: 1px solid var(--line);
+        }
+        pre.diff span { display: block; padding: 0 16px; white-space: pre; }
+        pre.diff .add { background: var(--added); color: var(--added-ink); }
+        pre.diff .del { background: var(--removed); color: var(--removed-ink); }
+        pre.diff .hunk { background: var(--hunk); color: var(--muted); }
+        @media (max-width: 720px) { main { grid-template-columns: 1fr; } #runs { border-right: 0; } }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Autonomous JMeter Agent — Control Plane</h1>
+    <p>Every self-healing turn, with the model's stated rationale next to the diff it produced.</p>
+</header>
+<main>
+    <section id="runs" aria-label="Runs"><p class="empty" style="padding:16px 20px">Loading…</p></section>
+    <section id="detail"><p class="empty">Select a run to see what the agent changed.</p></section>
+</main>
+<script>
+    const runsEl = document.getElementById('runs');
+    const detailEl = document.getElementById('detail');
+
+    const text = value => String(value ?? '');
+
+    function element(tag, className, content) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (content !== undefined) node.textContent = text(content);
+        return node;
+    }
+
+    function diffClass(line) {
+        if (line.startsWith('+')) return 'add';
+        if (line.startsWith('-')) return 'del';
+        if (line.startsWith('@@')) return 'hunk';
+        return '';
+    }
+
+    function renderRuns(runs) {
+        runsEl.replaceChildren();
+        if (!runs.length) {
+            runsEl.append(element('p', 'empty', 'No runs recorded yet.'));
+            return;
+        }
+        runs.forEach(run => {
+            const card = element('div', 'run');
+            card.setAttribute('role', 'button');
+            card.append(element('h2', null, run.runId.slice(0, 8)));
+
+            const meta = element('p');
+            const badge = element('span',
+                'badge ' + (run.healedFirstTime ? 'clean' : 'healed'),
+                run.healedFirstTime ? 'first try' : run.attempts + ' attempts');
+            meta.append(badge, ' ', text(run.mode), ' · ', text(run.totalSamples) + ' samples');
+            card.append(meta, element('p', null, new Date(run.recordedAt).toLocaleString()));
+
+            card.onclick = () => {
+                runsEl.querySelectorAll('.run').forEach(el => el.setAttribute('aria-selected', 'false'));
+                card.setAttribute('aria-selected', 'true');
+                loadRun(run.runId);
+            };
+            runsEl.append(card);
+        });
+    }
+
+    function renderDetail(run) {
+        detailEl.replaceChildren();
+
+        const facts = element('dl');
+        const rows = [
+            ['Run', run.runId],
+            ['Mode', run.mode],
+            ['Finished', new Date(run.recordedAt).toLocaleString()],
+            ['Attempts', run.attempts],
+            ['Samples', run.totalSamples],
+            ['Tokens', run.totalTokens],
+            ['Plan', run.planFingerprint],
+            ['Churn', run.churn]
+        ];
+        rows.forEach(([label, value]) => facts.append(element('dt', null, label), element('dd', null, value)));
+        detailEl.append(element('h2', null, 'Run summary'), facts);
+
+        if (run.rationale) {
+            detailEl.append(element('h2', null, 'Why this plan'), element('p', null, run.rationale));
+        }
+
+        detailEl.append(element('h2', null, 'Self-healing turns'));
+        if (!run.heals.length) {
+            detailEl.append(element('p', 'empty', 'The plan passed first time; nothing was healed.'));
+            return;
+        }
+
+        run.heals.forEach(turn => {
+            const card = element('div', 'turn');
+            card.append(element('h3', null,
+                `After attempt ${turn.attempt} — ${turn.strategy} (+${turn.addedLines}/-${turn.removedLines})`));
+
+            const body = element('div', 'body');
+            body.append(element('p', 'why', turn.diagnosis || 'The model gave no rationale.'));
+            if (turn.edits.length) {
+                const list = element('ul');
+                turn.edits.forEach(edit => list.append(element('li', null, edit)));
+                body.append(list);
+            }
+            body.append(element('p', 'empty', 'Failure: ' + turn.failureSignature));
+            card.append(body);
+
+            const diff = element('pre', 'diff');
+            (turn.diff.length ? turn.diff : ['(no structural change)'])
+                .forEach(line => diff.append(element('span', diffClass(line), line)));
+            card.append(diff);
+
+            detailEl.append(card);
+        });
+    }
+
+    async function loadRun(runId) {
+        const response = await fetch('api/runs/' + encodeURIComponent(runId));
+        if (!response.ok) {
+            detailEl.replaceChildren(element('p', 'empty', 'That run is no longer in the ledger.'));
+            return;
+        }
+        renderDetail(await response.json());
+    }
+
+    fetch('api/runs?limit=50')
+        .then(response => response.json())
+        .then(renderRuns)
+        .catch(() => runsEl.replaceChildren(element('p', 'empty', 'Could not reach the control plane.')));
+</script>
+</body>
+</html>

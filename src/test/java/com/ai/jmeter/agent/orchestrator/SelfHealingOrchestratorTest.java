@@ -25,6 +25,7 @@ import com.ai.jmeter.agent.domain.SampleFailure;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
+import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
 import com.ai.jmeter.agent.domain.analysis.RootCauseHypothesis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.results.RunSummary;
@@ -32,6 +33,8 @@ import com.ai.jmeter.agent.domain.results.SampleStatistics;
 import com.ai.jmeter.agent.domain.memory.HealPrecedent;
 import com.ai.jmeter.agent.domain.jmx.JmxMutation;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
+import com.ai.jmeter.agent.domain.journal.HealJournal;
+import com.ai.jmeter.agent.domain.journal.HealTurn;
 import com.ai.jmeter.agent.domain.jmx.JmxStructure;
 import com.ai.jmeter.agent.domain.jmx.JmxValidationResult;
 import com.ai.jmeter.agent.domain.redaction.CompliancePolicyViolationException;
@@ -50,6 +53,7 @@ import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.ResultStoreException;
 import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
+import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import java.nio.file.Path;
@@ -131,6 +135,9 @@ class SelfHealingOrchestratorTest {
     private ResultStorePort resultStore;
 
     @Mock
+    private RunLedgerPort runLedger;
+
+    @Mock
     private RootCauseAnalyzerPort rootCauseAnalyzer;
 
     @BeforeEach
@@ -162,7 +169,7 @@ class SelfHealingOrchestratorTest {
         return new SelfHealingOrchestrator(
                 new TrafficParserRegistry(List.of(harParser)),
                 agent, executionEngine, workspace, redactor, jmxDocument, memory, costGovernor,
-                workloadProfiler, resultStore, new RegressionAnalyzer(5, 3.0, 1.10),
+                workloadProfiler, resultStore, runLedger, new RegressionAnalyzer(5, 3.0, 1.10),
                 rootCauseAnalyzer,
                 new OrchestratorSettings(maxAttempts, strictCompliance, 3, 10, traceCorrelation));
     }
@@ -536,7 +543,7 @@ class SelfHealingOrchestratorTest {
             return new SelfHealingOrchestrator(
                     new TrafficParserRegistry(List.of(parser)),
                     agent, executionEngine, workspace, redactor, jmxDocument, memory,
-                    costGovernor, workloadProfiler, resultStore,
+                    costGovernor, workloadProfiler, resultStore, runLedger,
                     new RegressionAnalyzer(5, 3.0, 1.10), rootCauseAnalyzer,
                     OrchestratorSettings.defaults())
                     .run(AgentRunRequest.of(ExecutionMode.SQL, SOURCE));
@@ -809,6 +816,116 @@ class SelfHealingOrchestratorTest {
             run(3);
 
             verify(jmxDocument, never()).apply(anyString(), anyList());
+        }
+    }
+
+    @Nested
+    @DisplayName("the audit trail of what the agent changed")
+    class Journalling {
+
+        @Test
+        @DisplayName("records nothing for a plan that never needed healing")
+        void cleanRunHasAnEmptyJournal() {
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+
+            assertThat(run(3).journal().isEmpty()).isTrue();
+        }
+
+        @Test
+        @DisplayName("keeps the model's rationale next to the diff each repair produced")
+        void recordsRationaleAndDiff() {
+            when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, CLEAN_RUN);
+
+            HealJournal journal = run(3).journal();
+
+            assertThat(journal.turns()).singleElement().satisfies(turn -> {
+                assertThat(turn.attempt()).isEqualTo(1);
+                assertThat(turn.fullRewrite()).isFalse();
+                assertThat(turn.diagnosis())
+                        .isEqualTo("Login response was never mined for the bearer token");
+                assertThat(turn.edits()).singleElement()
+                        .asString().contains("auth_token");
+                assertThat(turn.failureSignature()).contains("401");
+                // The diff is between the draft that failed and the patch that replaced it.
+                assertThat(turn.diff().render())
+                        .contains("- <plan>draft</plan>")
+                        .contains("+ <plan>patched</plan>");
+            });
+        }
+
+        @Test
+        @DisplayName("records a rewrite as a rewrite, with the diff but no edit list")
+        void recordsARewrite() {
+            when(agent.proposeRepairs(anyString(), anyString(), anyList()))
+                    .thenReturn(JmxRepairPlan.rewrite("Plan is structurally beyond patching"));
+            when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, CLEAN_RUN);
+
+            assertThat(run(3).journal().turns()).singleElement().satisfies(turn -> {
+                assertThat(turn.fullRewrite()).isTrue();
+                assertThat(turn.strategy()).isEqualTo("full rewrite");
+                assertThat(turn.edits()).isEmpty();
+                assertThat(turn.diagnosis()).isEqualTo("Plan is structurally beyond patching");
+                assertThat(turn.diff().render()).contains("+ <plan>rewritten</plan>");
+            });
+        }
+
+        @Test
+        @DisplayName("says so when a structural repair had to be abandoned mid-turn")
+        void recordsAFailedStructuralRepair() {
+            // The reviewer needs to know the model's plan was not what actually happened.
+            when(jmxDocument.apply(anyString(), anyList()))
+                    .thenThrow(new JmxDocumentException("No element named 'login'"));
+            when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, CLEAN_RUN);
+
+            assertThat(run(3).journal().turns()).singleElement().satisfies(turn -> {
+                assertThat(turn.fullRewrite()).isTrue();
+                assertThat(turn.diagnosis())
+                        .contains("Structural repair failed")
+                        .contains("No element named 'login'");
+            });
+        }
+
+        @Test
+        @DisplayName("records one turn per repair when the loop heals more than once")
+        void recordsEveryTurn() {
+            when(executionEngine.execute(any()))
+                    .thenReturn(UNAUTHORIZED, UNAUTHORIZED, CLEAN_RUN);
+
+            HealJournal journal = run(3).journal();
+
+            assertThat(journal.turnCount()).isEqualTo(2);
+            assertThat(journal.turns().stream().map(HealTurn::attempt)).containsExactly(1, 2);
+        }
+
+        @Test
+        @DisplayName("files the run with the control plane so the turns can be reviewed later")
+        void filesTheRunInTheLedger() {
+            when(executionEngine.execute(any())).thenReturn(UNAUTHORIZED, CLEAN_RUN);
+
+            AgentRunOutcome outcome = run(3);
+
+            ArgumentCaptor<RunLedgerEntry> filed =
+                    ArgumentCaptor.forClass(RunLedgerEntry.class);
+            verify(runLedger).record(filed.capture());
+            assertThat(filed.getValue().runId())
+                    .isEqualTo(outcome.analysis().summary().runId());
+            assertThat(filed.getValue().mode()).isEqualTo(ExecutionMode.API);
+            assertThat(filed.getValue().attempts()).isEqualTo(2);
+            assertThat(filed.getValue().journal().turnCount()).isEqualTo(1);
+            assertThat(filed.getValue().rationale()).isEqualTo("Login response was never mined "
+                    + "for the bearer token");
+        }
+
+        @Test
+        @DisplayName("still reports a pass when the audit trail cannot be written")
+        void ledgerFailureIsNotFatal() {
+            // A run that genuinely passed must not be reported as failed because an audit file
+            // was unwritable.
+            when(executionEngine.execute(any())).thenReturn(CLEAN_RUN);
+            org.mockito.Mockito.doThrow(new ResultStoreException("disk full", new RuntimeException()))
+                    .when(runLedger).record(any());
+
+            assertThat(run(3).report().successful()).isTrue();
         }
     }
 }

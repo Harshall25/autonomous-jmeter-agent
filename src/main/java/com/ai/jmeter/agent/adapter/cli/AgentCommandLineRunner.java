@@ -71,6 +71,7 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
                   Variables : {}
                   Redacted  : {}
                   Cost      : {}
+                  Healing   : {}
                   Rationale : {}""",
                 outcome.attempts(),
                 outcome.artifacts().jmxScript(),
@@ -79,6 +80,7 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
                 outcome.script().identifiedVariables(),
                 outcome.redaction().countsByCategory(),
                 outcome.cost().describe(),
+                outcome.journal().churn(),
                 outcome.script().executionRationale());
     }
 

@@ -2,6 +2,7 @@ package com.ai.jmeter.agent.domain;
 
 import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
 
 /**
@@ -20,6 +21,8 @@ import com.ai.jmeter.agent.domain.redaction.RedactionResult;
  *                  the compliance record for this run
  * @param cost      what the run spent with the model, for attribution and chargeback
  * @param analysis  what the passing run measured, and how it compares to history
+ * @param journal   every self-healing turn the run took, each with the diff it produced, so the
+ *                  autonomous edits are reviewable rather than merely reported
  */
 public record AgentRunOutcome(
         ExecutionMode mode,
@@ -29,7 +32,12 @@ public record AgentRunOutcome(
         int attempts,
         RedactionResult redaction,
         RunCost cost,
-        RunAnalysis analysis) {
+        RunAnalysis analysis,
+        HealJournal journal) {
+
+    public AgentRunOutcome {
+        journal = journal == null ? HealJournal.empty() : journal;
+    }
 
     /** @return {@code true} when the plan passed without any self-healing turn. */
     public boolean healedFirstTime() {

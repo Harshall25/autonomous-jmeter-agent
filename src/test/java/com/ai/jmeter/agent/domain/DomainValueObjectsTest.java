@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
 import com.ai.jmeter.agent.domain.cost.RunCost;
+import com.ai.jmeter.agent.domain.journal.HealJournal;
 import com.ai.jmeter.agent.domain.results.RunSummary;
 import java.time.Instant;
 import com.ai.jmeter.agent.domain.redaction.RedactionResult;
@@ -133,6 +134,10 @@ class DomainValueObjectsTest {
         }
 
         private AgentRunOutcome outcomeAfter(int attempts) {
+            return outcomeAfter(attempts, HealJournal.empty());
+        }
+
+        private AgentRunOutcome outcomeAfter(int attempts, HealJournal journal) {
             return new AgentRunOutcome(
                     ExecutionMode.API,
                     new JmeterGenerationResult("<plan/>", "", List.of(), ""),
@@ -141,7 +146,14 @@ class DomainValueObjectsTest {
                     attempts,
                     RedactionResult.clean("[]"),
                     RunCost.empty(0),
-                    RunAnalysis.withoutComparison(summary()));
+                    RunAnalysis.withoutComparison(summary()),
+                    journal);
+        }
+
+        @Test
+        @DisplayName("treats an absent journal as a run that healed nothing")
+        void absentJournalIsEmpty() {
+            assertThat(outcomeAfter(1, null).journal().isEmpty()).isTrue();
         }
 
         @Test

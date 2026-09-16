@@ -2,14 +2,19 @@ package com.ai.jmeter.agent.orchestrator;
 
 import com.ai.jmeter.agent.domain.AgentRunOutcome;
 import com.ai.jmeter.agent.domain.AgentRunRequest;
+import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.ExecutionReport;
 import com.ai.jmeter.agent.domain.JmeterGenerationResult;
 import com.ai.jmeter.agent.domain.SelfHealingFailedException;
 import com.ai.jmeter.agent.domain.WorkspaceArtifacts;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.domain.analysis.RunAnalysis;
+import com.ai.jmeter.agent.domain.controlplane.RunLedgerEntry;
 import com.ai.jmeter.agent.domain.cost.RunCost;
 import com.ai.jmeter.agent.domain.jmx.JmxMutation;
+import com.ai.jmeter.agent.domain.journal.HealJournal;
+import com.ai.jmeter.agent.domain.journal.HealTurn;
+import com.ai.jmeter.agent.domain.journal.PlanDiff;
 import com.ai.jmeter.agent.domain.jmx.JmxRepairPlan;
 import com.ai.jmeter.agent.domain.jmx.JmxValidationResult;
 import com.ai.jmeter.agent.domain.memory.HealPrecedent;
@@ -27,6 +32,7 @@ import com.ai.jmeter.agent.port.JmxDocumentException;
 import com.ai.jmeter.agent.port.JmxDocumentPort;
 import com.ai.jmeter.agent.port.ResultStorePort;
 import com.ai.jmeter.agent.port.RootCauseAnalyzerPort;
+import com.ai.jmeter.agent.port.RunLedgerPort;
 import com.ai.jmeter.agent.port.SensitiveDataRedactorPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
@@ -73,6 +79,7 @@ public final class SelfHealingOrchestrator {
     private final CostGovernorPort costGovernor;
     private final WorkloadProfilerPort workloadProfiler;
     private final ResultStorePort resultStore;
+    private final RunLedgerPort runLedger;
     private final RegressionAnalyzer regressionAnalyzer;
     private final RootCauseAnalyzerPort rootCauseAnalyzer;
     private final OrchestratorSettings settings;
@@ -92,6 +99,7 @@ public final class SelfHealingOrchestrator {
             CostGovernorPort costGovernor,
             WorkloadProfilerPort workloadProfiler,
             ResultStorePort resultStore,
+            RunLedgerPort runLedger,
             RegressionAnalyzer regressionAnalyzer,
             RootCauseAnalyzerPort rootCauseAnalyzer,
             OrchestratorSettings settings) {
@@ -105,6 +113,7 @@ public final class SelfHealingOrchestrator {
         this.costGovernor = costGovernor;
         this.workloadProfiler = workloadProfiler;
         this.resultStore = resultStore;
+        this.runLedger = runLedger;
         this.regressionAnalyzer = regressionAnalyzer;
         this.rootCauseAnalyzer = rootCauseAnalyzer;
         this.settings = settings;
@@ -143,6 +152,7 @@ public final class SelfHealingOrchestrator {
         current = applyPostGenerationEdits(current, workload);
 
         AppliedRepair lastRepair = null;
+        HealJournal journal = HealJournal.empty();
 
         for (int attempt = 1; ; attempt++) {
             Attempt outcome = attemptOnce(current);
@@ -152,11 +162,17 @@ public final class SelfHealingOrchestrator {
                 log.info("Attempt {}/{} passed with {} samples and no failures",
                         attempt, settings.maxAttempts(), report.totalSamples());
                 recordPrecedent(lastRepair, true);
-                log.info("Run cost: {}", costGovernor.currentCost().describe());
+
+                RunCost cost = costGovernor.currentCost();
+                log.info("Run cost: {}", cost.describe());
+
+                RunAnalysis analysis = analyzeResults(request, current, report);
+                log.info("{}", journal.describe());
+                fileInLedger(request.mode(), analysis, attempt, report, cost, current, journal);
+
                 return new AgentRunOutcome(
                         request.mode(), current, outcome.artifacts(), report, attempt,
-                        redaction, costGovernor.currentCost(),
-                        analyzeResults(request, current, report));
+                        redaction, cost, analysis, journal);
             }
 
             log.warn("Attempt {}/{} failed: status={} failedSamples={}",
@@ -171,9 +187,41 @@ public final class SelfHealingOrchestrator {
                 throw new SelfHealingFailedException(attempt, report);
             }
 
-            RepairOutcome repaired = repair(current, report);
+            RepairOutcome repaired = repair(current, report, attempt);
             current = repaired.plan();
             lastRepair = repaired.applied();
+            journal = journal.plus(repaired.turn());
+        }
+    }
+
+    /**
+     * Files the run with the control plane, so the heal turns can be reviewed after the fact.
+     *
+     * <p>Best-effort for the same reason the result store is: a run that genuinely passed must
+     * not be reported as failed because an audit file was unwritable.
+     */
+    private void fileInLedger(
+            ExecutionMode mode,
+            RunAnalysis analysis,
+            int attempts,
+            ExecutionReport report,
+            RunCost cost,
+            JmeterGenerationResult plan,
+            HealJournal journal) {
+        try {
+            runLedger.record(new RunLedgerEntry(
+                    analysis.summary().runId(),
+                    analysis.summary().recordedAt(),
+                    mode,
+                    attempts,
+                    report.totalSamples(),
+                    analysis.summary().planFingerprint(),
+                    cost.totalTokens(),
+                    plan.executionRationale(),
+                    journal));
+        } catch (RuntimeException e) {
+            log.warn("Could not file the run in the control plane ledger ({}); the run still passed",
+                    e.getMessage());
         }
     }
 
@@ -342,37 +390,60 @@ public final class SelfHealingOrchestrator {
      * Asks for structural edits first and only regenerates the plan when edits cannot express the
      * fix, so working correlation survives a repair instead of being rediscovered each turn.
      */
-    private RepairOutcome repair(JmeterGenerationResult current, ExecutionReport report) {
+    private RepairOutcome repair(
+            JmeterGenerationResult current, ExecutionReport report, int attempt) {
         String signature = report.failureSignature();
         JmxRepairPlan repairPlan = agent.proposeRepairs(
                 summarize(current), report.errorDigest(), memory.recall(signature, settings.recalledPrecedents()));
 
         if (repairPlan.requiresFullRewrite()) {
             log.info("Model asked for a full rewrite: {}", repairPlan.diagnosis());
-            return RepairOutcome.rewritten(
-                    agent.healScript(current.jmxXmlContent(), report.errorDigest()));
+            return rewrite(current, report, attempt, signature, repairPlan.diagnosis());
         }
 
         try {
             String patched = jmxDocument.apply(current.jmxXmlContent(), repairPlan.mutations());
             log.info("Applied {} structural edit(s):\n{}",
                     repairPlan.mutations().size(), repairPlan.describe());
+            List<String> edits =
+                    repairPlan.mutations().stream().map(JmxMutation::describe).toList();
             return new RepairOutcome(
                     new JmeterGenerationResult(
                             patched,
                             current.csvTemplateContent(),
                             current.identifiedVariables(),
                             repairPlan.diagnosis()),
-                    new AppliedRepair(
-                            signature,
-                            repairPlan.diagnosis(),
-                            repairPlan.mutations().stream().map(JmxMutation::describe).toList()));
+                    new AppliedRepair(signature, repairPlan.diagnosis(), edits),
+                    new HealTurn(
+                            attempt, signature, repairPlan.diagnosis(), edits, false,
+                            PlanDiff.between(current.jmxXmlContent(), patched)));
         } catch (JmxDocumentException e) {
             log.warn("Structural repair could not be applied ({}); regenerating the plan instead",
                     e.getMessage());
-            return RepairOutcome.rewritten(
-                    agent.healScript(current.jmxXmlContent(), report.errorDigest()));
+            return rewrite(current, report, attempt, signature,
+                    "Structural repair failed (%s); the plan was regenerated".formatted(
+                            e.getMessage()));
         }
+    }
+
+    /**
+     * Regenerates the plan from scratch, recording the turn as a rewrite.
+     *
+     * <p>A rewrite has no discrete edits to remember — "the model wrote a different plan" is not
+     * advice the next run can act on — but it is still the change most worth showing a reviewer,
+     * so the diff is captured even though the precedent is not.
+     */
+    private RepairOutcome rewrite(
+            JmeterGenerationResult current,
+            ExecutionReport report,
+            int attempt,
+            String signature,
+            String diagnosis) {
+        JmeterGenerationResult healed =
+                agent.healScript(current.jmxXmlContent(), report.errorDigest());
+        return new RepairOutcome(healed, null, new HealTurn(
+                attempt, signature, diagnosis, List.of(), true,
+                PlanDiff.between(current.jmxXmlContent(), healed.jmxXmlContent())));
     }
 
     /**
@@ -394,12 +465,11 @@ public final class SelfHealingOrchestrator {
     /**
      * @param applied null for a full rewrite, which has no discrete edits worth remembering —
      *                "the model wrote a different plan" is not advice the next run can act on
+     * @param turn    the auditable record of this repair, kept for every repair including a
+     *                rewrite
      */
-    private record RepairOutcome(JmeterGenerationResult plan, AppliedRepair applied) {
-
-        static RepairOutcome rewritten(JmeterGenerationResult plan) {
-            return new RepairOutcome(plan, null);
-        }
+    private record RepairOutcome(
+            JmeterGenerationResult plan, AppliedRepair applied, HealTurn turn) {
     }
 
     /** A structural repair awaiting the verdict of the run that follows it. */
