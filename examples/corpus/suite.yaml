@@ -1,0 +1,58 @@
+# Example golden corpus.
+#
+# Run it with --evaluate=examples/corpus/suite.yaml before shipping a prompt change or after
+# bumping the model. Prompt text is behaviour: without a score to compare, a one-word edit can
+# halve the first-attempt success rate with nothing failing.
+#
+# Paths resolve against this file's own directory, so the corpus works wherever it is checked out.
+#
+# Expectation types:
+#   sampler                 the plan exercises an endpoint whose sampler name contains the value
+#   variable                the plan correlates a variable of this name
+#   csvColumn               the plan parameterizes from a CSV column of this name
+#   minSamplers             the plan covers at least this many endpoints
+#   noUnresolvedVariables   nothing the plan reads is left undefined (takes no value)
+
+revision: "prompts@v1 / claude-3-5-sonnet"
+
+cases:
+  # The correlation case. A plan that misses the bearer token still runs, and comes back 401
+  # with nothing in the XML to suggest why — which is exactly what a structural assertion catches
+  # and a green test run does not.
+  - name: checkout-har
+    mode: API
+    source: captures/checkout.har
+    workload: telemetry/access.log
+    expectations:
+      - type: sampler
+        value: login
+      - type: sampler
+        value: orders
+      - type: variable
+        value: auth_token
+      - type: csvColumn
+        value: username
+      - type: minSamplers
+        value: "4"
+      - type: noUnresolvedVariables
+
+  # The spec-ingestion case: no capture exists yet, so the plan is derived from the contract.
+  - name: payments-openapi
+    mode: OPENAPI
+    source: captures/payments-openapi.yaml
+    expectations:
+      - type: sampler
+        value: /v1/charge
+      - type: minSamplers
+        value: "3"
+      - type: noUnresolvedVariables
+
+  # The JDBC case. Nothing here should be parameterized from a CSV, and every bound parameter
+  # must resolve, or the plan fails at connection time rather than in a way the model can fix.
+  - name: slow-query-log
+    mode: SQL
+    source: captures/slow-queries.log
+    expectations:
+      - type: minSamplers
+        value: "2"
+      - type: noUnresolvedVariables

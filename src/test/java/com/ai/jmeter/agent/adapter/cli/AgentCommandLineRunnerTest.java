@@ -170,6 +170,14 @@ class AgentCommandLineRunnerTest {
     }
 
     @Test
+    @DisplayName("leaves an evaluation run to the runner that owns it")
+    void staysQuietForAnEvaluationRun() {
+        runner().run("--evaluate=corpus/suite.yaml");
+
+        verifyNoInteractions(orchestrator);
+    }
+
+    @Test
     @DisplayName("names the valid modes when given one it does not know")
     void rejectsUnknownMode() {
         AgentCommandLineRunner runner = runner();

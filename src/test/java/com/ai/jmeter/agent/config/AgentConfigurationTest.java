@@ -9,10 +9,12 @@ import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
 import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
+import com.ai.jmeter.agent.adapter.cli.EvaluationCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
+import com.ai.jmeter.agent.adapter.eval.YamlEvaluationCorpus;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
 import com.ai.jmeter.agent.adapter.ledger.JsonlRunLedger;
@@ -23,6 +25,7 @@ import com.ai.jmeter.agent.domain.ExecutionMode;
 import com.ai.jmeter.agent.domain.ci.GatePolicy;
 import com.ai.jmeter.agent.domain.ci.GateVerdict;
 import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
+import com.ai.jmeter.agent.orchestrator.EvaluationHarness;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
@@ -200,6 +203,18 @@ class AgentConfigurationTest {
         assertThat(mapper.getExitCode(new PerformanceGateFailedException(
                 GateVerdict.blocked(List.of("checkout regressed"))))).isEqualTo(2);
         assertThat(mapper.getExitCode(new IllegalStateException("something broke"))).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("binds the evaluation corpus and the harness that scores against it")
+    void bindsEvaluationHarness() {
+        assertThat(configuration.evaluationCorpusPort())
+                .isInstanceOf(YamlEvaluationCorpus.class);
+        EvaluationHarness harness = configuration.evaluationHarness(
+                mock(SelfHealingOrchestrator.class), configuration.jmxDocumentPort());
+        assertThat(configuration.evaluationCommandLineRunner(
+                configuration.evaluationCorpusPort(), harness))
+                .isInstanceOf(EvaluationCommandLineRunner.class);
     }
 
     @Test

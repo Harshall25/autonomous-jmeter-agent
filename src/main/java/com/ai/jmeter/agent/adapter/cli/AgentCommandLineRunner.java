@@ -57,13 +57,22 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        Optional<String> mode = argumentValue(args, MODE_ARGUMENT);
-        Optional<String> source = argumentValue(args, SOURCE_ARGUMENT);
+        if (CommandLineArguments.value(args, EvaluationCommandLineRunner.EVALUATE_ARGUMENT)
+                .isPresent()) {
+            // The corpus runner owns this invocation; printing usage over its report would only
+            // suggest the agent had failed to understand the command.
+            return;
+        }
+
+        Optional<String> mode = CommandLineArguments.value(args, MODE_ARGUMENT);
+        Optional<String> source = CommandLineArguments.value(args, SOURCE_ARGUMENT);
 
         if (mode.isEmpty() || source.isEmpty()) {
             log.info("""
                     Autonomous JMeter Performance Testing Agent
                       Usage: --mode=<MODE> --source=<path> [--workload=<access log>]
+
+                      Or:    --evaluate=<suite.yaml> to score the agent against a golden corpus.
 
                       API      ingests an HTTP Archive capture of real traffic.
                       OPENAPI  ingests an OpenAPI / Swagger document (JSON or YAML).
@@ -80,7 +89,8 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
         AgentRunOutcome outcome = orchestrator.run(new AgentRunRequest(
                 parseMode(mode.get()),
                 Path.of(source.get()),
-                argumentValue(args, WORKLOAD_ARGUMENT).map(Path::of).orElse(null)));
+                CommandLineArguments.value(args, WORKLOAD_ARGUMENT)
+                        .map(Path::of).orElse(null)));
 
         log.info("""
                 Agentic run complete after {} attempt(s).
@@ -124,14 +134,6 @@ public final class AgentCommandLineRunner implements CommandLineRunner {
             throw new PerformanceGateFailedException(verdict);
         }
         log.info("{}", verdict.describe());
-    }
-
-    private static Optional<String> argumentValue(String[] args, String prefix) {
-        return Arrays.stream(args)
-                .filter(arg -> arg.startsWith(prefix))
-                .map(arg -> arg.substring(prefix.length()))
-                .filter(value -> !value.isBlank())
-                .findFirst();
     }
 
     private static ExecutionMode parseMode(String rawMode) {

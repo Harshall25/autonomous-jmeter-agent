@@ -8,10 +8,12 @@ import com.ai.jmeter.agent.adapter.ai.SpringAiAgentAdapter;
 import com.ai.jmeter.agent.adapter.api.ControlPlaneController;
 import com.ai.jmeter.agent.adapter.ci.GitHubActionsBuildReporter;
 import com.ai.jmeter.agent.adapter.cli.AgentCommandLineRunner;
+import com.ai.jmeter.agent.adapter.cli.EvaluationCommandLineRunner;
 import com.ai.jmeter.agent.adapter.cli.JtlResultParser;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderJmeterAdapter;
 import com.ai.jmeter.agent.adapter.cli.ProcessBuilderProcessRunner;
 import com.ai.jmeter.agent.adapter.cli.ProcessRunner;
+import com.ai.jmeter.agent.adapter.eval.YamlEvaluationCorpus;
 import com.ai.jmeter.agent.adapter.fs.FileSystemWorkspaceAdapter;
 import com.ai.jmeter.agent.adapter.jmx.DomJmxDocumentAdapter;
 import com.ai.jmeter.agent.adapter.k8s.KubernetesJmeterAdapter;
@@ -30,11 +32,13 @@ import com.ai.jmeter.agent.adapter.workload.AccessLogWorkloadProfiler;
 import com.ai.jmeter.agent.domain.analysis.RegressionAnalyzer;
 import com.ai.jmeter.agent.domain.ci.PerformanceGate;
 import com.ai.jmeter.agent.domain.ci.PerformanceGateFailedException;
+import com.ai.jmeter.agent.orchestrator.EvaluationHarness;
 import com.ai.jmeter.agent.orchestrator.OrchestratorSettings;
 import com.ai.jmeter.agent.orchestrator.SelfHealingOrchestrator;
 import com.ai.jmeter.agent.orchestrator.TrafficParserRegistry;
 import com.ai.jmeter.agent.port.BuildReporterPort;
 import com.ai.jmeter.agent.port.CostGovernorPort;
+import com.ai.jmeter.agent.port.EvaluationCorpusPort;
 import com.ai.jmeter.agent.port.ExecutionEnginePort;
 import com.ai.jmeter.agent.port.HealMemoryPort;
 import com.ai.jmeter.agent.port.JmeterAgentPort;
@@ -48,11 +52,12 @@ import com.ai.jmeter.agent.port.TrafficParserPort;
 import com.ai.jmeter.agent.port.WorkloadProfilerPort;
 import com.ai.jmeter.agent.port.WorkspacePort;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import java.util.List;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.ExitCodeExceptionMapper;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -202,6 +207,30 @@ public class AgentConfiguration {
             GateProperties gateProperties) {
         return new AgentCommandLineRunner(
                 orchestrator, performanceGate, buildReporterPort, gateProperties.enabled());
+    }
+
+    /**
+     * Scores the agent against a golden corpus.
+     *
+     * <p>Wired into the application rather than kept in the test tree because the corpus belongs
+     * to whoever runs the agent: a team scores it against their own captures, on their own
+     * schedule, using the same binary they deploy.
+     */
+    @Bean
+    public EvaluationHarness evaluationHarness(
+            SelfHealingOrchestrator orchestrator, JmxDocumentPort jmxDocumentPort) {
+        return new EvaluationHarness(orchestrator, jmxDocumentPort);
+    }
+
+    @Bean
+    public EvaluationCorpusPort evaluationCorpusPort() {
+        return new YamlEvaluationCorpus(new ObjectMapper(new YAMLFactory()));
+    }
+
+    @Bean
+    public EvaluationCommandLineRunner evaluationCommandLineRunner(
+            EvaluationCorpusPort evaluationCorpusPort, EvaluationHarness evaluationHarness) {
+        return new EvaluationCommandLineRunner(evaluationCorpusPort, evaluationHarness);
     }
 
     @Bean
