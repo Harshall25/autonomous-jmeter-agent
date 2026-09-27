@@ -1,0 +1,12 @@
+target/
+
+# Runtime output of an agent run: generated plans, test data and JMeter results.
+workspace/
+*.jtl
+jmeter.log
+jmeter-run.log
+
+.idea/
+*.iml
+.vscode/
+.DS_Store

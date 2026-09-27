@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: autonomous-jmeter-agent
+  main:
+    banner-mode: off
+    web-application-type: none
+  ai:
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:PLACEHOLDER_KEY}
+      chat:
+        options:
+          model: ${ANTHROPIC_MODEL:claude-3-5-sonnet-20240620}
+          # Plans run to thousands of lines of XML, and a truncated plan is an unusable one.
+          max-tokens: 8192
+          # Near-deterministic: the agent needs a reproducible plan, not a creative one.
+          temperature: 0.2
+
+agent:
+  jmeter:
+    # JMeter's bin directory — the one containing the `jmeter` launcher.
+    home-path: ${JMETER_HOME:/path/to/jmeter/bin}
+    # Total JMeter runs allowed per request, counting the first: one generation, two repairs.
+    max-retries: 3
+    # Where generated plans, test data and results are written.
+    workspace: ${AGENT_WORKSPACE:workspace}
+    # A single JMeter run is killed past this budget so the agent can never hang.
+    execution-timeout: 10m
+    # Defaults to <home-path>/../lib; set only for non-standard JMeter layouts.
+    # lib-path:
+    max-har-entries: 150
+    max-har-body-characters: 2000
+    max-sql-queries: 200
+    max-process-output-characters: 8000
+    max-recorded-failures: 500
+
+logging:
+  level:
+    com.ai.jmeter.agent: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{28} - %msg%n"
